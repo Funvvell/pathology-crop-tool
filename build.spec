@@ -1,23 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build spec for LiverPortalCrop."""
+"""PyInstaller build spec for 病理裁剪工具."""
 import sys
 from pathlib import Path
 
+import site
+
 block_cipher = None
 
-# 定位 sdpc 包的 DLL 目录
-_sdpc_dll_src = (
-    Path(sys.prefix)
-    / "Lib/site-packages/sdpc/WINDOWS/dll"
-)
+# 定位 sdpc 包的 DLL 目录（搜索系统和用户 site-packages）
+_sdpc_dll_src = None
+for sp in [Path(sys.prefix) / "Lib/site-packages"] + [Path(p) for p in site.getsitepackages()]:
+    test = sp / "sdpc" / "WINDOWS" / "dll"
+    if test.exists():
+        _sdpc_dll_src = str(test)
+        break
+if _sdpc_dll_src is None:
+    test = Path(site.getusersitepackages()) / "sdpc" / "WINDOWS" / "dll"
+    if test.exists():
+        _sdpc_dll_src = str(test)
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=(
-        [(str(_sdpc_dll_src), 'sdpc/WINDOWS/dll')]
-        if _sdpc_dll_src.exists() else []
+        [(_sdpc_dll_src, 'sdpc/WINDOWS/dll')]
+        if _sdpc_dll_src else []
     ),
     hiddenimports=[
         'sdpc.Sdpc',
