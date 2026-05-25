@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QRectF, QThread
+from PySide6.QtWidgets import QDialog
 from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
@@ -18,11 +19,15 @@ from liver_portal_crop.canvas import WSICanvas
 from liver_portal_crop.dialogs import SettingsDialog
 from liver_portal_crop.exporter import BatchExporter, CropConfig
 from liver_portal_crop.navigator import NavigationWidget
+from liver_portal_crop.tissue_detect import (
+    detect_tissue, tissue_regions_to_rois, tissue_regions_to_rois_grid, TissueDialog,
+)
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
 
 SESSION_DIR = Path.home() / ".liver_portal_crop"
 SESSION_FILE = SESSION_DIR / "session.json"
+PRESETS_FILE = SESSION_DIR / "presets.json"
 
 
 class MainWindow(QMainWindow):
@@ -44,6 +49,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._setup_menu()
         self._load_session()
+        self._load_presets()
 
     def _setup_ui(self) -> None:
         central = QWidget()
@@ -63,6 +69,19 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("就绪")
         self._status_label.setObjectName("statusLabel")
         tbar.addWidget(self._status_label)
+
+        # 预设
+        self._preset_cb = QComboBox()
+        self._preset_cb.setObjectName("presetCb")
+        self._preset_cb.setMinimumWidth(90)
+        self._preset_cb.currentTextChanged.connect(self._apply_preset)
+        tbar.addWidget(self._preset_cb)
+
+        self._save_preset_btn = QPushButton("💾")
+        self._save_preset_btn.setFixedSize(26, 24)
+        self._save_preset_btn.setObjectName("savePresetBtn")
+        self._save_preset_btn.clicked.connect(self._save_preset)
+        tbar.addWidget(self._save_preset_btn)
 
         tbar.addSpacing(12)
 
@@ -173,6 +192,10 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(4, 4, 4, 4)
 
+        self._tissue_btn = QPushButton("组织检测 (HistoKit)")
+        self._tissue_btn.clicked.connect(self._detect_tissue)
+        right_layout.addWidget(self._tissue_btn)
+
         right_layout.addWidget(QLabel("ROI 列表"))
         self._roi_list = QListWidget()
         right_layout.addWidget(self._roi_list)
@@ -215,6 +238,71 @@ class MainWindow(QMainWindow):
             "作者：Funvvell\n"
             "SDPC 病理切片批量裁剪与导出",
         ))
+
+    # ── 文件管理 ──────────────────────────────────────
+
+    # ── 预设 ──────────────────────────────────────────
+
+    def _load_presets(self) -> None:
+        """加载预设列表到下拉框。"""
+        self._presets: dict[str, dict] = {}
+        if PRESETS_FILE.exists():
+            try:
+                self._presets = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                self._presets = {}
+        # 确保有默认预设
+        if "默认" not in self._presets:
+            self._presets["默认"] = {"mag": "20x", "ratio": "16:9", "w": 512, "h": 512}
+        self._preset_cb.blockSignals(True)
+        self._preset_cb.clear()
+        self._preset_cb.addItems(list(self._presets.keys()))
+        self._preset_cb.setCurrentText("默认")
+        self._preset_cb.blockSignals(False)
+        self._apply_preset("默认")
+
+    def _save_preset(self) -> None:
+        """保存当前配置为预设。"""
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "保存预设", "预设名称：")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        self._presets[name] = {
+            "mag": self._mag_cb.currentText(),
+            "ratio": self._ratio_cb.currentText(),
+            "w": self._frame_w_spin.value(),
+            "h": self._frame_h_spin.value(),
+        }
+        try:
+            PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PRESETS_FILE.write_text(json.dumps(self._presets, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        self._preset_cb.blockSignals(True)
+        self._preset_cb.clear()
+        self._preset_cb.addItems(list(self._presets.keys()))
+        self._preset_cb.setCurrentText(name)
+        self._preset_cb.blockSignals(False)
+
+    def _apply_preset(self, name: str) -> None:
+        """应用预设。"""
+        preset = self._presets.get(name)
+        if not preset:
+            return
+        self._mag_cb.blockSignals(True)
+        self._ratio_cb.blockSignals(True)
+        self._frame_w_spin.blockSignals(True)
+        self._frame_h_spin.blockSignals(True)
+        self._mag_cb.setCurrentText(preset.get("mag", "20x"))
+        self._ratio_cb.setCurrentText(preset.get("ratio", "16:9"))
+        self._frame_w_spin.setValue(preset.get("w", 512))
+        self._frame_h_spin.setValue(preset.get("h", 512))
+        self._mag_cb.blockSignals(False)
+        self._ratio_cb.blockSignals(False)
+        self._frame_w_spin.blockSignals(False)
+        self._frame_h_spin.blockSignals(False)
+        self._canvas.set_frame_size(preset.get("w", 512), preset.get("h", 512))
 
     # ── 文件管理 ──────────────────────────────────────
 
@@ -354,6 +442,11 @@ class MainWindow(QMainWindow):
         self._roi_manager.add_roi(roi)
 
     def _on_canvas_roi_selected(self, roi_id: str) -> None:
+        if roi_id == "__toggle_roi__":
+            new_state = not self._roi_mode_btn.isChecked()
+            self._roi_mode_btn.setChecked(new_state)
+            self._toggle_roi_mode(new_state)
+            return
         self._roi_manager.remove_roi(roi_id)
 
     def _on_roi_added(self, roi: ROIModel) -> None:
@@ -414,6 +507,12 @@ class MainWindow(QMainWindow):
             )
 
     def _start_export(self) -> None:
+        # 清理上次导出线程
+        if hasattr(self, '_export_thread') and self._export_thread.isRunning():
+            self._exporter.cancel()
+            self._export_thread.quit()
+            self._export_thread.wait(3000)
+
         self._cleanup_stale_rois()
         all_rois = self._roi_manager.all_rois()
 
@@ -441,6 +540,7 @@ class MainWindow(QMainWindow):
 
         self._crop_config.crop_width = crop_w
         self._crop_config.crop_height = crop_h
+        self._crop_config.mag_label = self._mag_cb.currentText().rstrip("xX")
 
         # 显示进度条
         self._progress_bar.setRange(0, len(all_rois))
@@ -449,20 +549,19 @@ class MainWindow(QMainWindow):
         self._cancel_btn.show()
         self._export_btn.setEnabled(False)
 
-        # 为导出创建独立 reader（避免与画布抢 DLL 锁）
-        export_readers: dict[Path, SDPCReader] = {}
-        for path, reader in self._readers.items():
-            try:
-                export_readers[path] = SDPCReader(str(path))
-            except Exception:
-                pass  # 创建失败则跳过（罕见）
+        # 传路径字典给线程，由线程在后台打开 reader（不阻塞主线程）
+        path_input: dict[Path, str | SDPCReader] = {}
+        for path in set(roi.slide_path for roi in all_rois):
+            if path in self._readers:
+                path_input[path] = str(path)  # 传路径，线程内再打开
 
         self._exporter = BatchExporter(self._crop_config)
         self._export_thread = QThread()
         self._exporter.moveToThread(self._export_thread)
 
         self._export_thread.started.connect(
-            lambda: self._exporter.run(all_rois, export_readers)
+            lambda: self._exporter.run(all_rois, path_input),
+            Qt.DirectConnection,
         )
         self._exporter.progress.connect(self._progress_bar.setValue)
         self._exporter.file_done.connect(self._on_export_file_done)
@@ -518,6 +617,12 @@ class MainWindow(QMainWindow):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             self._roi_manager.from_json(data.get("rois", {"rois": []}))
+            # 恢复 ROI 到画布（当前已加载的切片）
+            if self._current_slide and self._current_slide in self._readers:
+                self._refresh_roi_list()
+                for roi in self._roi_manager.get_slide_rois(self._current_slide):
+                    from PySide6.QtCore import QRectF
+                    self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h))
             cfg = data.get("config", {})
             self._crop_config = CropConfig(
                 output_dir=Path(
@@ -530,6 +635,65 @@ class MainWindow(QMainWindow):
             self._frame_h_spin.setValue(self._crop_config.crop_height)
         except Exception:
             pass
+
+    # ── 组织检测 ──────────────────────────────────────
+
+    def _detect_tissue(self) -> None:
+        """打开组织检测参数对话框 → 生成 ROI。"""
+        if not self._current_slide or self._current_slide not in self._readers:
+            QMessageBox.information(self, "提示", "请先选择一张切片")
+            return
+
+        reader = self._readers[self._current_slide]
+        tile_w = self._frame_w_spin.value()
+        tile_h = self._frame_h_spin.value()
+
+        dlg = TissueDialog(reader, tile_w, tile_h, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        params = dlg.get_params()
+        # 使用对话框内的倍率/比例算出的框尺寸
+        tile_w = params.get("tile_w", tile_w)
+        tile_h = params.get("tile_h", tile_h)
+        thumb = reader.thumbnail
+        # detect_tissue 只接受形态学参数，剔除 mode/stride/max_count
+        tissue_kw = {k: v for k, v in params.items()
+                     if k in ("open_radius", "close_radius", "fill_holes",
+                              "remove_small", "min_area_pct")}
+        result = detect_tissue(thumb, **tissue_kw)
+
+        scale_x = reader.full_width / thumb.shape[1]
+        scale_y = reader.full_height / thumb.shape[0]
+        if params.get("mode") == "grid":
+            stride = params.get("stride", 2)
+            rois_list = tissue_regions_to_rois_grid(
+                result["mask"], scale_x, scale_y, tile_w, tile_h,
+                tile_w * stride, tile_h * stride,
+                max_count=params["max_count"],
+            )
+        else:
+            rois_list = tissue_regions_to_rois(
+                result["mask"], scale_x, scale_y, tile_w, tile_h,
+                max_count=params["max_count"],
+            )
+
+        from PySide6.QtCore import QRectF
+        import uuid
+        self._roi_manager.clear_slide_rois(self._current_slide)
+        self._canvas.clear_roi_rects()
+        for x, y, w, h in rois_list:
+            roi = ROIModel(
+                slide_path=self._current_slide,
+                x=x, y=y, w=w, h=h, id=uuid.uuid4().hex[:12],
+            )
+            self._roi_manager.add_roi(roi)
+            self._canvas.add_roi_rect(roi.id, QRectF(x, y, w, h))
+
+        self._refresh_roi_list()
+        self._status_label.setText(
+            f"组织检测: {result['pct']:.1f}% 组织, {len(rois_list)} 个 ROI"
+        )
 
     def _cleanup_stale_rois(self) -> None:
         active = set(self._readers.keys())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,13 +23,13 @@ class CropConfig:
     crop_height: int = 1024
     format: str = "tiff"
     compression: str = "zlib"
-
+    mag_label: str = ""  # 用于文件名，如 "20x"
 
 
 class BatchExporter(QObject):
     """在 QThread 中运行批量导出。
 
-    ROI 坐标已为 level 0（全分辨率）坐标，直接居中裁剪后输出。
+    接收文件路径字典，在后台线程打开 reader 并导出。
     """
 
     progress = Signal(int, int)       # current, total
@@ -46,22 +47,35 @@ class BatchExporter(QObject):
     def run(
         self,
         rois: list[ROIModel],
-        readers: dict[Path, SDPCReader],
+        path_to_reader: dict[Path, SDPCReader | str],
     ) -> None:
         """执行批量导出。
 
         Args:
             rois: 全部 ROI 列表（坐标 = level 0 全分辨率）
-            readers: {slide_path: SDPCReader} 映射
+            path_to_reader: {slide_path: SDPCReader} 或 {slide_path: "file/path"}
         """
         total = len(rois)
         self._config.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 按文件分组，每组独立编号
-        from collections import defaultdict
+        # 按文件分组
         groups: dict[Path, list[tuple[int, ROIModel]]] = defaultdict(list)
         for idx, roi in enumerate(rois):
             groups[roi.slide_path].append((idx, roi))
+
+        # 在后台线程打开 reader（避免主线程卡顿）
+        readers: dict[Path, SDPCReader] = {}
+        for path in groups:
+            val = path_to_reader.get(path)
+            if val is None:
+                continue
+            if isinstance(val, SDPCReader):
+                readers[path] = val
+            else:
+                try:
+                    readers[path] = SDPCReader(val)
+                except Exception:
+                    pass  # 打开失败则跳过
 
         for idx, roi in enumerate(rois):
             if self._cancel_flag:
@@ -78,7 +92,6 @@ class BatchExporter(QObject):
                     )
                     continue
 
-                # ROI 坐标已经是 level 0 全分辨率坐标
                 cx = roi.x + roi.w // 2
                 cy = roi.y + roi.h // 2
                 crop_x, crop_y, crop_w, crop_h = center_crop_rect(
@@ -93,11 +106,11 @@ class BatchExporter(QObject):
                     crop_x, crop_y, crop_w, crop_h, level=0,
                 )
 
-                # 按文件独立编号
                 file_rois = groups[roi.slide_path]
                 local_idx = next(n for n, (i, _) in enumerate(file_rois) if i == idx)
 
-                output_name = f"{roi.slide_path.stem}_ROI_{local_idx:04d}.tiff"
+                mag_suffix = f"_{self._config.mag_label}" if self._config.mag_label else ""
+                output_name = f"{roi.slide_path.stem}_ROI_{local_idx:04d}{mag_suffix}.tiff"
                 output_path = self._config.output_dir / output_name
                 tifffile.imwrite(
                     str(output_path), region,

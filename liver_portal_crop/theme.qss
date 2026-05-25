@@ -108,6 +108,9 @@ QLabel { color: #909296; font-size: 11px; }
     background: transparent; border: none; color: #909296;
     font-size: 12px; font-weight: bold;
 }
+#presetCb { min-width: 90px; font-weight: bold; }
+#savePresetBtn { background: transparent; border: none; font-size: 14px; padding: 0 4px; }
+#savePresetBtn:hover { background: #373a40; border-radius: 3px; }
 #cancelBtn:hover { color: #fff; background: #e81123; border-radius: 3px; }
 /* ── 进度条 ── */
 #exportProgress {

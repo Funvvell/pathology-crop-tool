@@ -399,8 +399,12 @@ class WSICanvas(QGraphicsView):
         self.viewport_changed.emit(rect)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Space and self._roi_mode:
-            self._place_roi_at_frame()
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            if self._roi_mode:
+                self._place_roi_at_frame()
+            else:
+                # 不在ROI模式时按空格 → 请求切换模式
+                self.roi_selected.emit("__toggle_roi__")
             return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and not event.isAutoRepeat():
             # 删除所有选中的 ROI（快照列表避免迭代时修改）

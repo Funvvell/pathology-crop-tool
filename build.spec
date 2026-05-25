@@ -24,8 +24,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=(
-        [(_sdpc_dll_src, 'sdpc/WINDOWS/dll')]
-        if _sdpc_dll_src else []
+        [(_sdpc_dll_src, 'sdpc/WINDOWS/dll'), ('icon.ico', '.')]
+        if _sdpc_dll_src else [('icon.ico', '.')]
     ),
     hiddenimports=[
         'sdpc.Sdpc',

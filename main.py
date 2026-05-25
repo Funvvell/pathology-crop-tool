@@ -1,11 +1,10 @@
 """病理裁剪工具 入口点"""
 
 import sys
-import os
 from pathlib import Path
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QBrush
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
+from PySide6.QtWidgets import QApplication
 from liver_portal_crop.app import MainWindow
 
 
@@ -25,13 +24,10 @@ def _create_arrow_pixmaps(theme_dir: Path):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setBrush(QBrush(QColor("#c1c2c5")))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawPolygon([QtCore.QPoint(*pt) for pt in points])
+        from PySide6.QtCore import QPoint
+        p.drawPolygon([QPoint(*pt) for pt in points])
         p.end()
         pix.save(str(path))
-
-
-# 引入 QtCore 用于 QPoint
-from PySide6 import QtCore
 
 
 def main():
@@ -39,7 +35,15 @@ def main():
     app.setApplicationName("病理裁剪工具")
     app.setOrganizationName("病理裁剪工具")
 
-    theme_dir = Path(__file__).parent / "liver_portal_crop"
+    # 运行时路径：PyInstaller 打包后使用 sys._MEIPASS
+    base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+
+    # 应用图标
+    icon_path = base_dir / "icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    theme_dir = base_dir / "liver_portal_crop"
     _create_arrow_pixmaps(theme_dir)
 
     # 加载 QSS 主题
@@ -47,11 +51,11 @@ def main():
     if qss_path.exists():
         with open(qss_path, encoding="utf-8") as f:
             qss = f.read()
-            # 替换路径占位符为绝对路径
             qss = qss.replace("__THEME_DIR__", str(theme_dir).replace("\\", "/"))
             app.setStyleSheet(qss)
 
     window = MainWindow()
+    window.setWindowIcon(QIcon(str(icon_path)))  # 窗口图标
     window.show()
     sys.exit(app.exec())
 

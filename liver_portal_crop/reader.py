@@ -27,6 +27,10 @@ os.chdir(str(_DLL_DIR))
 
 _so = cdll.LoadLibrary(str(_DLL_DIR / "DecodeSdpcDll.dll"))
 
+# DLL 全局锁 — DecodeSdpcDll.dll 不是线程安全的（有全局状态），
+# 所有跨实例的 DLL 调用必须串行化
+_dll_lock = threading.Lock()
+
 # 恢复原始 CWD（sdpc 的 Sdpc.py 会 chdir 到 DLL 目录）
 os.chdir(_old_cwd)
 
@@ -103,7 +107,6 @@ class SDPCReader:
             self._dims.append((w, h))
             self._downsamples.append(self._downsample_rate ** level)
 
-        self._lock = threading.Lock()
         try:
             self._mpp: float | None = float(self._handle.contents.picHead.contents.ruler)
         except Exception:
@@ -188,7 +191,7 @@ class SDPCReader:
         lx = int(x / scale) if scale != 0 else 0
         ly = int(y / scale) if scale != 0 else 0
 
-        with self._lock:
+        with _dll_lock:
             rgb_pos = POINTER(c_uint8)()
             rgb_ptr = byref(rgb_pos)
 
@@ -223,7 +226,7 @@ class SDPCReader:
         if lw <= 0 or lh <= 0:
             raise SDPCReadError(f"无效区域: lv{level} ({lx},{ly},{lw},{lh})")
 
-        with self._lock:
+        with _dll_lock:
             rgb_pos = POINTER(c_uint8)()
             rgb_ptr = byref(rgb_pos)
             ret = _so.SqGetRoiRgbOfSpecifyLayer(
