@@ -104,6 +104,10 @@ class SDPCReader:
             self._downsamples.append(self._downsample_rate ** level)
 
         self._lock = threading.Lock()
+        try:
+            self._mpp: float | None = float(self._handle.contents.picHead.contents.ruler)
+        except Exception:
+            self._mpp = None
         self._full_w, self._full_h = self._dims[0]
         self._thumbnail: np.ndarray | None = None
         self._thumbnail_size: tuple[int, int] | None = None
@@ -126,6 +130,11 @@ class SDPCReader:
     @property
     def full_height(self) -> int:
         return self._full_h
+
+    @property
+    def mpp(self) -> float | None:
+        """微米/像素，用于计算物理尺寸对应的像素数。"""
+        return self._mpp
 
     @property
     def level_count(self) -> int:

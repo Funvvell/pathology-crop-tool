@@ -24,6 +24,7 @@ class CropConfig:
     compression: str = "zlib"
 
 
+
 class BatchExporter(QObject):
     """在 QThread 中运行批量导出。
 
@@ -99,8 +100,7 @@ class BatchExporter(QObject):
                 output_name = f"{roi.slide_path.stem}_ROI_{local_idx:04d}.tiff"
                 output_path = self._config.output_dir / output_name
                 tifffile.imwrite(
-                    str(output_path),
-                    region,
+                    str(output_path), region,
                     compression=self._config.compression,
                 )
 

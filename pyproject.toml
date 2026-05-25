@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "pathology-crop-tool"
-version = "0.1.0"
+version = "0.2.0"
 description = "批量裁剪 SDPC 病理切片中的汇管区"
 requires-python = ">=3.10"
 dependencies = [
