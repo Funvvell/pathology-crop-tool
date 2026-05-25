@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 from PySide6.QtCore import Qt, QRectF, QThread
 from PySide6.QtWidgets import QDialog
-from PySide6.QtGui import QAction, QImage, QPixmap
+from PySide6.QtGui import QAction, QImage, QPixmap, QFont, QPainter, QColor, QPen
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
+    QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QMessageBox,
-    QProgressBar, QPushButton, QSpinBox, QSplitter,
+    QProgressBar, QPushButton, QSlider, QSpinBox, QSplitter,
     QVBoxLayout, QWidget,
 )
 
@@ -24,6 +26,79 @@ from liver_portal_crop.tissue_detect import (
 )
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
+
+
+# ═══════════════════════════════════════════════════
+#  DAB 热图对话框
+# ═══════════════════════════════════════════════════
+
+class DabHeatmapDialog(QDialog):
+    """选择 DAB 热图参数。"""
+
+    def __init__(self, level_max: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("DAB 热图")
+        self.resize(300, 220)
+
+        vl = QVBoxLayout(self)
+        info = QLabel("选择层级和阈值生成 DAB 热图")
+        info.setStyleSheet("color: #c1c2c5; font-size: 12px; padding: 4px;")
+        vl.addWidget(info)
+
+        form = QFormLayout()
+
+        self._level_spin = QSpinBox()
+        self._level_spin.setRange(0, level_max)
+        self._level_spin.setValue(min(2, level_max))
+        form.addRow("检测层级:", self._level_spin)
+
+        hlay = QHBoxLayout()
+        self._thr_slider = QSlider(Qt.Orientation.Horizontal)
+        self._thr_slider.setRange(0, 50)
+        self._thr_slider.setValue(10)
+        self._thr_label = QLabel("0.10")
+        self._thr_label.setFixedWidth(36)
+        hlay.addWidget(self._thr_slider)
+        hlay.addWidget(self._thr_label)
+        form.addRow("DAB 阈值:", hlay)
+
+        hlay2 = QHBoxLayout()
+        self._opa_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opa_slider.setRange(10, 100)
+        self._opa_slider.setValue(50)
+        self._opa_label = QLabel("0.50")
+        self._opa_label.setFixedWidth(36)
+        hlay2.addWidget(self._opa_slider)
+        hlay2.addWidget(self._opa_label)
+        form.addRow("透明度:", hlay2)
+
+        vl.addLayout(form)
+
+        btns = QHBoxLayout()
+        ok_btn = QPushButton("生成热图")
+        ok_btn.clicked.connect(self.accept)
+        ok_btn.setDefault(True)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(ok_btn)
+        btns.addWidget(cancel_btn)
+        vl.addLayout(btns)
+
+        self._thr_slider.valueChanged.connect(
+            lambda v: self._thr_label.setText(f"{v / 100:.2f}")
+        )
+        self._opa_slider.valueChanged.connect(
+            lambda v: self._opa_label.setText(f"{v / 100:.2f}")
+        )
+
+    def get_values(self) -> tuple[int, float, float]:
+        return (
+            self._level_spin.value(),
+            self._thr_slider.value() / 100.0,
+            self._opa_slider.value() / 100.0,
+        )
+
 
 SESSION_DIR = Path.home() / ".liver_portal_crop"
 SESSION_FILE = SESSION_DIR / "session.json"
@@ -44,6 +119,8 @@ class MainWindow(QMainWindow):
             output_dir=Path.home() / "liver_crop_output",
         )
         self._current_slide: Path | None = None
+        self._heatmap_item = None
+        self._heatmap_visible = False
 
         self._setup_ui()
         self._connect_signals()
@@ -196,6 +273,15 @@ class MainWindow(QMainWindow):
         self._tissue_btn.clicked.connect(self._detect_tissue)
         right_layout.addWidget(self._tissue_btn)
 
+        self._heatmap_btn = QPushButton("DAB 热图")
+        self._heatmap_btn.clicked.connect(self._show_dab_heatmap)
+        right_layout.addWidget(self._heatmap_btn)
+
+        self._toggle_heatmap_btn = QPushButton("隐藏热图")
+        self._toggle_heatmap_btn.clicked.connect(self._toggle_heatmap)
+        self._toggle_heatmap_btn.setEnabled(False)
+        right_layout.addWidget(self._toggle_heatmap_btn)
+
         right_layout.addWidget(QLabel("ROI 列表"))
         self._roi_list = QListWidget()
         right_layout.addWidget(self._roi_list)
@@ -338,6 +424,9 @@ class MainWindow(QMainWindow):
                 self._current_slide = None
 
     def _on_file_selected(self, row: int) -> None:
+        # 切换切片时清除热图
+        self._remove_heatmap()
+
         if row < 0:
             return
         item = self._file_list.item(row)
@@ -719,6 +808,112 @@ class MainWindow(QMainWindow):
 
         self._refresh_roi_list()
         self._status_label.setText(f"组织检测: 共 {total_all} 个 ROI")
+
+    # ── DAB 热图 ──────────────────────────────────────
+
+    def _show_dab_heatmap(self) -> None:
+        """在 WSICanvas 上叠加 DAB 热图。"""
+        if not self._readers or self._current_slide is None:
+            QMessageBox.information(self, "提示", "请先加载切片")
+            return
+
+        reader = self._readers[self._current_slide]
+        dlg = DabHeatmapDialog(reader.level_count - 1, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        level, threshold, opacity = dlg.get_values()
+        level = min(level, reader.level_count - 1)
+        level = max(0, level)
+
+        # 移除旧热图
+        self._remove_heatmap()
+
+        # 进度对话框
+        from PySide6.QtWidgets import QProgressDialog
+        progress = QProgressDialog("正在生成热图...", None, 0, 0, self)
+        progress.setWindowTitle("DAB 热图")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        from PySide6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
+
+        try:
+            tw, th = reader.thumbnail_size
+            thumb_level = reader.level_count - 1
+            thumb_ds = reader.levels[thumb_level].downsample
+            ds = reader.levels[level].downsample
+            lw = min(int(tw * thumb_ds / ds), reader.levels[level].width)
+            lh = min(int(th * thumb_ds / ds), reader.levels[level].height)
+
+            progress.setLabelText("读取图像...")
+            QCoreApplication.processEvents()
+            region = reader._read_level_region(level, 0, 0, lw, lh)
+
+            progress.setLabelText("计算 DAB 评分...")
+            QCoreApplication.processEvents()
+            rgb = region.astype(np.float32)
+            rmb = (rgb[..., 0] - rgb[..., 2]) / np.maximum(1.0, rgb[..., 2])
+
+            progress.setLabelText("生成热图叠加层...")
+            QCoreApplication.processEvents()
+            from skimage.transform import resize
+            rmb_resized = resize(rmb, (th, tw), preserve_range=True, anti_aliasing=True)
+
+            h, w = rmb_resized.shape
+            rgba = np.zeros((h, w, 4), dtype=np.uint8)
+            mask = rmb_resized > threshold
+            if mask.any():
+                v = np.clip((rmb_resized - threshold) / (rmb_resized[mask].max() - threshold + 1e-8), 0, 1)
+                rgba[mask, 0] = (np.clip(v[mask] * 2, 0, 1) * 255).astype(np.uint8)
+                rgba[mask, 1] = (np.clip(2 - v[mask] * 2, 0, 1) * 255).astype(np.uint8)
+                rgba[mask, 3] = int(opacity * 255)
+
+            progress.setLabelText("显示热图...")
+            QCoreApplication.processEvents()
+            from PIL import Image as PILImage
+            from PIL.ImageQt import ImageQt
+            pil_img = PILImage.fromarray(rgba, 'RGBA')
+            qimg = ImageQt(pil_img)
+            pix = QPixmap.fromImage(qimg)
+            from PySide6.QtWidgets import QGraphicsPixmapItem
+            self._heatmap_item = QGraphicsPixmapItem(pix)
+            self._heatmap_item.setPos(0, 0)
+            thumb_ds = reader.levels[thumb_level].downsample
+            self._heatmap_item.setScale(thumb_ds)
+            self._heatmap_item.setZValue(-9000)
+            self._canvas.scene().addItem(self._heatmap_item)
+
+            self._heatmap_visible = True
+            self._toggle_heatmap_btn.setText("隐藏热图")
+            self._toggle_heatmap_btn.setEnabled(True)
+            self._status_label.setText(f"DAB 热图已生成 (level {level}, 阈值 {threshold:.2f})")
+
+        except Exception as e:
+            QMessageBox.warning(self, "生成失败", str(e))
+        finally:
+            progress.close()
+
+    def _toggle_heatmap(self) -> None:
+        """切换热图显示/隐藏。"""
+        if self._heatmap_item is None:
+            return
+        self._heatmap_visible = not self._heatmap_visible
+        self._heatmap_item.setVisible(self._heatmap_visible)
+        self._toggle_heatmap_btn.setText("隐藏热图" if self._heatmap_visible else "显示热图")
+
+    def _remove_heatmap(self) -> None:
+        """移除热图叠加层。"""
+        if self._heatmap_item is not None:
+            try:
+                self._canvas.scene().removeItem(self._heatmap_item)
+            except Exception:
+                pass
+            self._heatmap_item = None
+            self._heatmap_visible = False
+            self._toggle_heatmap_btn.setText("隐藏热图")
+            self._toggle_heatmap_btn.setEnabled(False)
 
     def _cleanup_stale_rois(self) -> None:
         active = set(self._readers.keys())
