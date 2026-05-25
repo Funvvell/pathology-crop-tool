@@ -221,15 +221,18 @@ from PySide6.QtWidgets import (
 class TissueDialog(QDialog):
     """组织检测参数对话框（含实时预览）。"""
 
-    def __init__(self, reader: SDPCReader, tile_w: int, tile_h: int, parent=None):
+    def __init__(self, reader: SDPCReader, tile_w: int, tile_h: int, parent=None,
+                 readers: dict = None, current_slide=None):
         super().__init__(parent)
         self.setWindowTitle("组织检测参数")
-        self.setMinimumSize(540, 580)
+        self.setMinimumSize(540, 620)
         self._reader = reader
         self._tile_w = tile_w
         self._tile_h = tile_h
         self._thumb = reader.thumbnail.copy()
         self._mpp = reader.mpp or 0.0
+        self._readers = readers or {}
+        self._current_slide = current_slide
         self._result: dict | None = None
         self._setup_ui()
         self._recalc_frame()
@@ -267,6 +270,13 @@ class TissueDialog(QDialog):
         self._frame_lbl = QLabel()
         self._frame_lbl.setStyleSheet("color: #c1c2c5; font-size: 12px;")
         form.addRow("框尺寸:", self._frame_lbl)
+
+        # 适用范围（多文件时显示）
+        self._scope_cb = QComboBox()
+        self._scope_cb.addItem("当前切片")
+        if len(self._readers) > 1:
+            self._scope_cb.addItem(f"全部 {len(self._readers)} 个切片")
+        form.addRow("适用范围:", self._scope_cb)
 
         form.addRow("", QLabel(""))
 
@@ -397,8 +407,10 @@ class TissueDialog(QDialog):
 
     def get_params(self) -> dict:
         is_grid = "网格" in self._mode_cb.currentText()
+        scope_text = self._scope_cb.currentText()
         return {
             "mode": "grid" if is_grid else "region",
+            "scope": "all" if "全部" in scope_text else "current",
             "open_radius": self._open_spin.value(),
             "close_radius": self._close_spin.value(),
             "fill_holes": self._fill_cb.isChecked(),

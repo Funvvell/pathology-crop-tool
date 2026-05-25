@@ -24,8 +24,13 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=(
-        [(_sdpc_dll_src, 'sdpc/WINDOWS/dll'), ('icon.ico', '.')]
-        if _sdpc_dll_src else [('icon.ico', '.')]
+        ([(_sdpc_dll_src, 'sdpc/WINDOWS/dll')] if _sdpc_dll_src else [])
+        + [
+            ('icon.ico', '.'),
+            ('liver_portal_crop/theme.qss', 'liver_portal_crop'),
+            ('liver_portal_crop/arrow_up.png', 'liver_portal_crop'),
+            ('liver_portal_crop/arrow_down.png', 'liver_portal_crop'),
+        ]
     ),
     hiddenimports=[
         'sdpc.Sdpc',

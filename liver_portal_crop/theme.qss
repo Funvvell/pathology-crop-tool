@@ -103,20 +103,23 @@ QLabel { color: #909296; font-size: 11px; }
 
 #navWidget { background: #141517; border: 1px solid #2c2e33; border-radius: 6px; }
 
-/* ── 进度条 ── */
+/* ── 取消按钮 ── */
 #cancelBtn {
-    background: transparent; border: none; color: #909296;
-    font-size: 12px; font-weight: bold;
+    background: #cc2222; border: none; color: #fff;
+    font-size: 13px; font-weight: bold; border-radius: 4px;
+    min-width: 24px; min-height: 24px;
 }
+#cancelBtn:hover { background: #ff3333; }
+#cancelBtn:pressed { background: #991111; }
 #presetCb { min-width: 90px; font-weight: bold; }
 #savePresetBtn { background: transparent; border: none; font-size: 14px; padding: 0 4px; }
 #savePresetBtn:hover { background: #373a40; border-radius: 3px; }
-#cancelBtn:hover { color: #fff; background: #e81123; border-radius: 3px; }
 /* ── 进度条 ── */
 #exportProgress {
     background: #1e1f23; border: 1px solid #373a40; border-radius: 4px;
-    text-align: center; color: #909296; font-size: 10px;
-    min-height: 16px; max-height: 18px;
+    text-align: center; color: #fff; font-size: 11px; font-weight: bold;
+    min-height: 20px; max-height: 22px;
+    min-width: 200px;
 }
 #exportProgress::chunk {
     background: #4c9aff; border-radius: 3px;

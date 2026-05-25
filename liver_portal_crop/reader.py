@@ -88,7 +88,8 @@ class SDPCReader:
 
         # 用 GBK 编码路径（Windows 本地编码，支持中文）
         path_bytes = str(self._path).encode("gbk")
-        self._handle = _so.SqOpenSdpc(c_char_p(path_bytes))
+        with _dll_lock:
+            self._handle = _so.SqOpenSdpc(c_char_p(path_bytes))
         if not self._handle:
             raise SDPCReadError(f"无法打开 SDPC 文件: {self._path}")
 
@@ -194,17 +195,17 @@ class SDPCReader:
         with _dll_lock:
             rgb_pos = POINTER(c_uint8)()
             rgb_ptr = byref(rgb_pos)
-
-            ret = _so.SqGetRoiRgbOfSpecifyLayer(
-                self._handle, rgb_ptr, w, h, lx, ly, level,
-            )
-            if ret != 0:
-                raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
-
-            arr = np.ctypeslib.as_array(rgb_pos, (h, w, 3)).copy()
-            rgb = arr[..., ::-1].copy()
-            _so.Dispose(rgb_pos)
-            return rgb
+            try:
+                ret = _so.SqGetRoiRgbOfSpecifyLayer(
+                    self._handle, rgb_ptr, w, h, lx, ly, level,
+                )
+                if ret != 0:
+                    raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
+                arr = np.ctypeslib.as_array(rgb_pos, (h, w, 3)).copy()
+                rgb = arr[..., ::-1].copy()
+                return rgb
+            finally:
+                _so.Dispose(rgb_pos)
 
     def _read_level_region(
         self, level: int, lx: int, ly: int, lw: int, lh: int,
@@ -229,16 +230,17 @@ class SDPCReader:
         with _dll_lock:
             rgb_pos = POINTER(c_uint8)()
             rgb_ptr = byref(rgb_pos)
-            ret = _so.SqGetRoiRgbOfSpecifyLayer(
-                self._handle, rgb_ptr, lw, lh, lx, ly, level,
-            )
-            if ret != 0:
-                raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
-
-            arr = np.ctypeslib.as_array(rgb_pos, (lh, lw, 3)).copy()
-            rgb = arr[..., ::-1].copy()
-            _so.Dispose(rgb_pos)
-            return rgb
+            try:
+                ret = _so.SqGetRoiRgbOfSpecifyLayer(
+                    self._handle, rgb_ptr, lw, lh, lx, ly, level,
+                )
+                if ret != 0:
+                    raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
+                arr = np.ctypeslib.as_array(rgb_pos, (lh, lw, 3)).copy()
+                rgb = arr[..., ::-1].copy()
+                return rgb
+            finally:
+                _so.Dispose(rgb_pos)
 
     def close(self) -> None:
         """关闭文件句柄。

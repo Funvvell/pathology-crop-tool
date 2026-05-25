@@ -348,6 +348,7 @@ class MainWindow(QMainWindow):
             self._current_slide = path
             self._canvas.load_slide(reader)
             self._refresh_roi_list()
+            self._restore_roi_on_canvas()
             self._status_label.setText(f"当前: {path.name}")
             self._update_nav_thumb(reader)
             if self._mag_cb.currentText() != "自定义":
@@ -456,6 +457,14 @@ class MainWindow(QMainWindow):
         self._canvas.remove_roi_rect(roi_id)
         self._refresh_roi_list()
 
+    def _restore_roi_on_canvas(self) -> None:
+        """切换文件后在画布上恢复当前文件的 ROI 矩形。"""
+        if not self._current_slide:
+            return
+        for roi in self._roi_manager.get_slide_rois(self._current_slide):
+            from PySide6.QtCore import QRectF
+            self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h))
+
     def _refresh_roi_list(self) -> None:
         self._roi_list.clear()
         if self._current_slide is None:
@@ -516,20 +525,17 @@ class MainWindow(QMainWindow):
         self._cleanup_stale_rois()
         all_rois = self._roi_manager.all_rois()
 
-        from collections import Counter
-        file_counts = Counter(r.slide_path.name for r in all_rois)
-        detail = "\n".join(f"  {f}: {n} 个" for f, n in file_counts.items())
-
         if not all_rois:
             QMessageBox.information(self, "提示", "请先标注 ROI")
             return
 
+        file_count = len(set(r.slide_path.name for r in all_rois))
         crop_w = self._frame_w_spin.value()
         crop_h = self._frame_h_spin.value()
 
         reply = QMessageBox.question(
             self, "确认导出",
-            f"将导出 {len(all_rois)} 个 ROI:\n{detail}\n\n"
+            f"将导出 {len(all_rois)} 个 ROI（来自 {file_count} 个文件）\n\n"
             f"输出目录: {self._crop_config.output_dir}\n"
             f"尺寸: {crop_w}×{crop_h}\n"
             f"继续吗？",
@@ -545,6 +551,7 @@ class MainWindow(QMainWindow):
         # 显示进度条
         self._progress_bar.setRange(0, len(all_rois))
         self._progress_bar.setValue(0)
+        self._progress_bar.setFormat(f"0/{len(all_rois)}")
         self._progress_bar.show()
         self._cancel_btn.show()
         self._export_btn.setEnabled(False)
@@ -563,7 +570,11 @@ class MainWindow(QMainWindow):
             lambda: self._exporter.run(all_rois, path_input),
             Qt.DirectConnection,
         )
-        self._exporter.progress.connect(self._progress_bar.setValue)
+        total_rois = len(all_rois)
+        self._exporter.progress.connect(lambda v, t: (
+            self._progress_bar.setValue(v),
+            self._progress_bar.setFormat(f"{v}/{t}"),
+        ))
         self._exporter.file_done.connect(self._on_export_file_done)
         self._exporter.finished.connect(self._on_export_finished)
         self._exporter.finished.connect(self._export_thread.quit)
@@ -639,61 +650,75 @@ class MainWindow(QMainWindow):
     # ── 组织检测 ──────────────────────────────────────
 
     def _detect_tissue(self) -> None:
-        """打开组织检测参数对话框 → 生成 ROI。"""
-        if not self._current_slide or self._current_slide not in self._readers:
-            QMessageBox.information(self, "提示", "请先选择一张切片")
+        """组织检测 → 对所选文件生成 ROI。"""
+        if not self._readers:
+            QMessageBox.information(self, "提示", "请先加载切片")
             return
 
-        reader = self._readers[self._current_slide]
+        reader = self._readers.get(self._current_slide) or next(iter(self._readers.values()))
         tile_w = self._frame_w_spin.value()
         tile_h = self._frame_h_spin.value()
 
-        dlg = TissueDialog(reader, tile_w, tile_h, self)
+        dlg = TissueDialog(reader, tile_w, tile_h, self,
+                           readers=self._readers, current_slide=self._current_slide)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         params = dlg.get_params()
-        # 使用对话框内的倍率/比例算出的框尺寸
         tile_w = params.get("tile_w", tile_w)
         tile_h = params.get("tile_h", tile_h)
-        thumb = reader.thumbnail
-        # detect_tissue 只接受形态学参数，剔除 mode/stride/max_count
+        slides = list(self._readers.keys()) if params.get("scope") == "all" else [self._current_slide]
+
         tissue_kw = {k: v for k, v in params.items()
                      if k in ("open_radius", "close_radius", "fill_holes",
                               "remove_small", "min_area_pct")}
-        result = detect_tissue(thumb, **tissue_kw)
-
-        scale_x = reader.full_width / thumb.shape[1]
-        scale_y = reader.full_height / thumb.shape[0]
-        if params.get("mode") == "grid":
-            stride = params.get("stride", 2)
-            rois_list = tissue_regions_to_rois_grid(
-                result["mask"], scale_x, scale_y, tile_w, tile_h,
-                tile_w * stride, tile_h * stride,
-                max_count=params["max_count"],
-            )
-        else:
-            rois_list = tissue_regions_to_rois(
-                result["mask"], scale_x, scale_y, tile_w, tile_h,
-                max_count=params["max_count"],
-            )
 
         from PySide6.QtCore import QRectF
         import uuid
-        self._roi_manager.clear_slide_rois(self._current_slide)
+
+        total_all = 0
+        for slide_path in slides:
+            if slide_path not in self._readers:
+                continue
+            reader = self._readers[slide_path]
+            thumb = reader.thumbnail
+            result = detect_tissue(thumb, **tissue_kw)
+
+            scale_x = reader.full_width / thumb.shape[1]
+            scale_y = reader.full_height / thumb.shape[0]
+
+            if params.get("mode") == "grid":
+                stride = params.get("stride", 2)
+                rois_list = tissue_regions_to_rois_grid(
+                    result["mask"], scale_x, scale_y, tile_w, tile_h,
+                    tile_w * stride, tile_h * stride,
+                    max_count=params["max_count"],
+                )
+            else:
+                rois_list = tissue_regions_to_rois(
+                    result["mask"], scale_x, scale_y, tile_w, tile_h,
+                    max_count=params["max_count"],
+                )
+
+            # 清除该文件旧 ROI，添加新的
+            self._roi_manager.clear_slide_rois(slide_path)
+            for x, y, w, h in rois_list:
+                roi = ROIModel(
+                    slide_path=slide_path,
+                    x=x, y=y, w=w, h=h, id=uuid.uuid4().hex[:12],
+                )
+                self._roi_manager.add_roi(roi)
+
+            total_all += len(rois_list)
+
+        # 刷新当前画布显示
         self._canvas.clear_roi_rects()
-        for x, y, w, h in rois_list:
-            roi = ROIModel(
-                slide_path=self._current_slide,
-                x=x, y=y, w=w, h=h, id=uuid.uuid4().hex[:12],
-            )
-            self._roi_manager.add_roi(roi)
-            self._canvas.add_roi_rect(roi.id, QRectF(x, y, w, h))
+        if self._current_slide and self._current_slide in self._readers:
+            for roi in self._roi_manager.get_slide_rois(self._current_slide):
+                self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h))
 
         self._refresh_roi_list()
-        self._status_label.setText(
-            f"组织检测: {result['pct']:.1f}% 组织, {len(rois_list)} 个 ROI"
-        )
+        self._status_label.setText(f"组织检测: 共 {total_all} 个 ROI")
 
     def _cleanup_stale_rois(self) -> None:
         active = set(self._readers.keys())
