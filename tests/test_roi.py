@@ -9,32 +9,29 @@ class TestROIModel:
     def test_create_roi(self):
         roi = ROIModel(
             slide_path=Path("/test/slide.sdpc"),
-            thumb_x=10, thumb_y=20, thumb_w=100, thumb_h=200,
+            x=10, y=20, w=100, h=200,
         )
         assert roi.id is not None
         assert len(roi.id) == 12
         assert roi.slide_path == Path("/test/slide.sdpc")
-        assert roi.thumb_x == 10
-        assert roi.thumb_y == 20
-        assert roi.thumb_w == 100
-        assert roi.thumb_h == 200
+        assert roi.x == 10
+        assert roi.y == 20
+        assert roi.w == 100
+        assert roi.h == 200
         assert roi.created_at is not None
 
     def test_auto_id_unique(self):
         roi1 = ROIModel(
-            slide_path=Path("a.sdpc"), thumb_x=0, thumb_y=0,
-            thumb_w=10, thumb_h=10,
+            slide_path=Path("a.sdpc"), x=0, y=0, w=10, h=10,
         )
         roi2 = ROIModel(
-            slide_path=Path("a.sdpc"), thumb_x=0, thumb_y=0,
-            thumb_w=10, thumb_h=10,
+            slide_path=Path("a.sdpc"), x=0, y=0, w=10, h=10,
         )
         assert roi1.id != roi2.id
 
     def test_default_slide_path(self):
         roi = ROIModel(
-            slide_path=Path("test.sdpc"), thumb_x=0, thumb_y=0,
-            thumb_w=10, thumb_h=10,
+            slide_path=Path("test.sdpc"), x=0, y=0, w=10, h=10,
         )
         assert isinstance(roi.slide_path, Path)
 
@@ -45,8 +42,7 @@ class TestROIManager:
 
     def _make_roi(self, slide="a.sdpc", x=0, y=0, w=10, h=10):
         return ROIModel(
-            slide_path=Path(slide), thumb_x=x, thumb_y=y,
-            thumb_w=w, thumb_h=h,
+            slide_path=Path(slide), x=x, y=y, w=w, h=h,
         )
 
     def test_add_and_count(self):
@@ -114,7 +110,7 @@ class TestROIManager:
         r = rois2[0]
         assert r.id == roi.id
         assert r.slide_path == Path("a.sdpc")
-        assert r.thumb_x == 10
-        assert r.thumb_y == 20
-        assert r.thumb_w == 100
-        assert r.thumb_h == 200
+        assert r.x == 10
+        assert r.y == 20
+        assert r.w == 100
+        assert r.h == 200

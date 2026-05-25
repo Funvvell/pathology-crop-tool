@@ -1,4 +1,4 @@
-"""设置对话框。"""
+"""设置对话框 — 仅设置输出目录。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFormLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
+    QLineEdit, QPushButton, QVBoxLayout,
     QDialogButtonBox,
 )
 
@@ -14,12 +14,12 @@ from liver_portal_crop.exporter import CropConfig
 
 
 class SettingsDialog(QDialog):
-    """裁剪设置对话框。"""
+    """导出设置对话框（仅输出目录，尺寸由底栏浮动框决定）。"""
 
     def __init__(self, config: CropConfig, parent=None):
         super().__init__(parent)
         self.setWindowTitle("导出设置")
-        self.resize(400, 200)
+        self.resize(400, 120)
         self._config = config
         self._setup_ui()
 
@@ -27,20 +27,6 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
-
-        # 裁剪宽度
-        self._width_spin = QSpinBox()
-        self._width_spin.setRange(64, 99999)
-        self._width_spin.setSingleStep(64)
-        self._width_spin.setValue(self._config.crop_width)
-        form.addRow("裁剪宽度 (px):", self._width_spin)
-
-        # 裁剪高度
-        self._height_spin = QSpinBox()
-        self._height_spin.setRange(64, 99999)
-        self._height_spin.setSingleStep(64)
-        self._height_spin.setValue(self._config.crop_height)
-        form.addRow("裁剪高度 (px):", self._height_spin)
 
         # 输出目录
         dir_layout = QHBoxLayout()
@@ -54,7 +40,6 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        # 按钮
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -73,6 +58,4 @@ class SettingsDialog(QDialog):
     def get_config(self) -> CropConfig:
         return CropConfig(
             output_dir=Path(self._dir_edit.text()),
-            crop_width=self._width_spin.value(),
-            crop_height=self._height_spin.value(),
         )

@@ -91,10 +91,13 @@ class MainWindow(QMainWindow):
 
         self._delete_roi_btn = QPushButton("删除选中 ROI")
         self._delete_roi_btn.clicked.connect(self._delete_selected_roi)
-        self._clear_roi_btn = QPushButton("清空当前 ROI")
-        self._clear_roi_btn.clicked.connect(self._clear_current_roi)
+        self._clear_current_btn = QPushButton("清空当前文件")
+        self._clear_current_btn.clicked.connect(self._clear_current_roi)
+        self._clear_all_btn = QPushButton("清空全部 ROI")
+        self._clear_all_btn.clicked.connect(self._clear_all_rois)
         right_layout.addWidget(self._delete_roi_btn)
-        right_layout.addWidget(self._clear_roi_btn)
+        right_layout.addWidget(self._clear_current_btn)
+        right_layout.addWidget(self._clear_all_btn)
         splitter.addWidget(right_panel)
 
         splitter.setSizes([200, 700, 200])
@@ -128,7 +131,7 @@ class MainWindow(QMainWindow):
 
         status.addPermanentWidget(QLabel("  [空格]创建ROI  "))
 
-        self._settings_btn = QPushButton("导出设置...")
+        self._settings_btn = QPushButton("输出目录...")
         self._settings_btn.clicked.connect(self._show_settings)
         self._export_btn = QPushButton("批量导出")
         self._export_btn.clicked.connect(self._start_export)
@@ -178,7 +181,9 @@ class MainWindow(QMainWindow):
             try:
                 reader = SDPCReader(path)
                 self._readers[path] = reader
-                self._file_list.addItem(path.name)
+                item = QListWidgetItem(path.name)
+                item.setData(Qt.ItemDataRole.UserRole, str(path))
+                self._file_list.addItem(item)
             except SDPCReadError as e:
                 QMessageBox.warning(self, "打开失败", str(e))
 
@@ -187,27 +192,26 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         item = self._file_list.takeItem(row)
-        # 找到对应的 path
-        for path in list(self._readers.keys()):
-            if path.name == item.text():
-                self._roi_manager.clear_slide_rois(path)
-                # 注意：不调用 close()（DLL 限制——关闭后无法再 open）
-                del self._readers[path]
-                break
+        # 从 item 的 UserRole 获取完整路径
+        path_str = item.data(Qt.ItemDataRole.UserRole)
+        path = Path(path_str) if path_str else None
+        if path and path in self._readers:
+            self._roi_manager.clear_slide_rois(path)
+            del self._readers[path]
 
     def _on_file_selected(self, row: int) -> None:
         if row < 0:
             return
         item = self._file_list.item(row)
-        for path, reader in self._readers.items():
-            if path.name == item.text():
-                self._current_slide = path
-                self._canvas.load_slide(reader)
-                self._refresh_roi_list()
-                self._status_label.setText(f"当前: {path.name}")
-                # 更新导航缩略图
-                self._update_nav_thumb(reader)
-                break
+        path_str = item.data(Qt.ItemDataRole.UserRole)
+        path = Path(path_str) if path_str else None
+        if path and path in self._readers:
+            reader = self._readers[path]
+            self._current_slide = path
+            self._canvas.load_slide(reader)
+            self._refresh_roi_list()
+            self._status_label.setText(f"当前: {path.name}")
+            self._update_nav_thumb(reader)
 
     def _update_nav_thumb(self, reader) -> None:
         """从 reader 的缩略图创建 QPixmap 传给导航控件。"""
@@ -249,10 +253,10 @@ class MainWindow(QMainWindow):
             return
         roi = ROIModel(
             slide_path=self._current_slide,
-            thumb_x=int(rect.x()),
-            thumb_y=int(rect.y()),
-            thumb_w=int(rect.width()),
-            thumb_h=int(rect.height()),
+            x=int(rect.x()),
+            y=int(rect.y()),
+            w=int(rect.width()),
+            h=int(rect.height()),
             id=roi_id,
         )
         self._roi_manager.add_roi(roi)
@@ -276,8 +280,8 @@ class MainWindow(QMainWindow):
         rois = self._roi_manager.get_slide_rois(self._current_slide)
         for roi in rois:
             item = QListWidgetItem(
-                f"ROI ({roi.thumb_x}, {roi.thumb_y}) "
-                f"{roi.thumb_w}×{roi.thumb_h}"
+                f"ROI ({roi.x}, {roi.y}) "
+                f"{roi.w}×{roi.h}"
             )
             item.setData(Qt.ItemDataRole.UserRole, roi.id)
             self._roi_list.addItem(item)
@@ -296,15 +300,26 @@ class MainWindow(QMainWindow):
         self._canvas.clear_roi_rects()
         self._refresh_roi_list()
 
+    def _clear_all_rois(self) -> None:
+        """清除所有文件的全部 ROI。"""
+        reply = QMessageBox.question(
+            self, "确认",
+            f"将删除全部 {len(self._roi_manager.all_rois())} 个 ROI，确定？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for roi in list(self._roi_manager.all_rois()):
+            self._roi_manager.remove_roi(roi.id)
+        self._canvas.clear_roi_rects()
+        self._refresh_roi_list()
+
     # ── 导出配置与执行 ────────────────────────────────
 
     def _show_settings(self) -> None:
         dialog = SettingsDialog(self._crop_config, self)
         if dialog.exec():
             self._crop_config = dialog.get_config()
-            # 同步裁剪尺寸到底栏浮动框
-            self._frame_w_spin.setValue(self._crop_config.crop_width)
-            self._frame_h_spin.setValue(self._crop_config.crop_height)
             self._status_label.setText(
                 f"输出: {self._crop_config.output_dir}"
             )
@@ -411,9 +426,7 @@ class MainWindow(QMainWindow):
             return
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            self._roi_manager.from_json(
-                data.get("rois", {"rois": []})
-            )
+            # 不恢复旧 ROI（每次打开都是干净的）
             cfg = data.get("config", {})
             self._crop_config = CropConfig(
                 output_dir=Path(

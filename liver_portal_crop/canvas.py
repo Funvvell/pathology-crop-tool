@@ -231,7 +231,7 @@ class WSICanvas(QGraphicsView):
         """根据当前缩放比选择最佳金字塔层级。"""
         if self._reader is None:
             return 0
-        zoom = self.transform().m11()
+        zoom = abs(self.transform().m11())
         # 目标：1 屏幕像素 ≈ 1 图像像素
         # zoom = screen_pixels / scene_pixels (level 0)
         # 需要的下采样比 = 1/zoom

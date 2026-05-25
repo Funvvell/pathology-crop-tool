@@ -56,6 +56,12 @@ class BatchExporter(QObject):
         total = len(rois)
         self._config.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # 按文件分组，每组独立编号
+        from collections import defaultdict
+        groups: dict[Path, list[tuple[int, ROIModel]]] = defaultdict(list)
+        for idx, roi in enumerate(rois):
+            groups[roi.slide_path].append((idx, roi))
+
         for idx, roi in enumerate(rois):
             if self._cancel_flag:
                 break
@@ -72,9 +78,8 @@ class BatchExporter(QObject):
                     continue
 
                 # ROI 坐标已经是 level 0 全分辨率坐标
-                # 以 ROI 中心为中点，裁剪为配置尺寸
-                cx = roi.thumb_x + roi.thumb_w // 2
-                cy = roi.thumb_y + roi.thumb_h // 2
+                cx = roi.x + roi.w // 2
+                cy = roi.y + roi.h // 2
                 crop_x, crop_y, crop_w, crop_h = center_crop_rect(
                     cx, cy,
                     self._config.crop_width,
@@ -83,13 +88,15 @@ class BatchExporter(QObject):
                     reader.full_height,
                 )
 
-                # 提取
                 region = reader.extract_region(
                     crop_x, crop_y, crop_w, crop_h, level=0,
                 )
 
-                # 保存 TIFF
-                output_name = f"{roi.slide_path.stem}_ROI_{idx:04d}.tiff"
+                # 按文件独立编号
+                file_rois = groups[roi.slide_path]
+                local_idx = next(n for n, (i, _) in enumerate(file_rois) if i == idx)
+
+                output_name = f"{roi.slide_path.stem}_ROI_{local_idx:04d}.tiff"
                 output_path = self._config.output_dir / output_name
                 tifffile.imwrite(
                     str(output_path),

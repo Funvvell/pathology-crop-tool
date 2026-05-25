@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import NamedTuple
 
@@ -102,6 +103,7 @@ class SDPCReader:
             self._dims.append((w, h))
             self._downsamples.append(self._downsample_rate ** level)
 
+        self._lock = threading.Lock()
         self._full_w, self._full_h = self._dims[0]
         self._thumbnail: np.ndarray | None = None
         self._thumbnail_size: tuple[int, int] | None = None
@@ -177,21 +179,20 @@ class SDPCReader:
         lx = int(x / scale) if scale != 0 else 0
         ly = int(y / scale) if scale != 0 else 0
 
-        rgb_pos = POINTER(c_uint8)()
-        rgb_ptr = byref(rgb_pos)
+        with self._lock:
+            rgb_pos = POINTER(c_uint8)()
+            rgb_ptr = byref(rgb_pos)
 
-        ret = _so.SqGetRoiRgbOfSpecifyLayer(
-            self._handle, rgb_ptr, w, h, lx, ly, level,
-        )
-        if ret != 0:
-            raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
+            ret = _so.SqGetRoiRgbOfSpecifyLayer(
+                self._handle, rgb_ptr, w, h, lx, ly, level,
+            )
+            if ret != 0:
+                raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
 
-        # 将原始数据转为 numpy (BGR) 再转 RGB
-        arr = np.ctypeslib.as_array(rgb_pos, (h, w, 3)).copy()
-        rgb = arr[..., ::-1].copy()  # BGR → RGB，必须 .copy() 确保连续内存
-
-        _so.Dispose(rgb_pos)
-        return rgb
+            arr = np.ctypeslib.as_array(rgb_pos, (h, w, 3)).copy()
+            rgb = arr[..., ::-1].copy()
+            _so.Dispose(rgb_pos)
+            return rgb
 
     def _read_level_region(
         self, level: int, lx: int, ly: int, lw: int, lh: int,
@@ -213,18 +214,19 @@ class SDPCReader:
         if lw <= 0 or lh <= 0:
             raise SDPCReadError(f"无效区域: lv{level} ({lx},{ly},{lw},{lh})")
 
-        rgb_pos = POINTER(c_uint8)()
-        rgb_ptr = byref(rgb_pos)
-        ret = _so.SqGetRoiRgbOfSpecifyLayer(
-            self._handle, rgb_ptr, lw, lh, lx, ly, level,
-        )
-        if ret != 0:
-            raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
+        with self._lock:
+            rgb_pos = POINTER(c_uint8)()
+            rgb_ptr = byref(rgb_pos)
+            ret = _so.SqGetRoiRgbOfSpecifyLayer(
+                self._handle, rgb_ptr, lw, lh, lx, ly, level,
+            )
+            if ret != 0:
+                raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
 
-        arr = np.ctypeslib.as_array(rgb_pos, (lh, lw, 3)).copy()
-        rgb = arr[..., ::-1].copy()
-        _so.Dispose(rgb_pos)
-        return rgb
+            arr = np.ctypeslib.as_array(rgb_pos, (lh, lw, 3)).copy()
+            rgb = arr[..., ::-1].copy()
+            _so.Dispose(rgb_pos)
+            return rgb
 
     def close(self) -> None:
         """关闭文件句柄。

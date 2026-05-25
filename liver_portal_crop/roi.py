@@ -13,13 +13,13 @@ from PySide6.QtCore import QObject, Signal
 
 @dataclass
 class ROIModel:
-    """一个矩形标注区域（缩略图坐标系）。"""
+    """一个矩形标注区域（level 0 全分辨率坐标系）。"""
 
     slide_path: Path
-    thumb_x: int
-    thumb_y: int
-    thumb_w: int
-    thumb_h: int
+    x: int
+    y: int
+    w: int
+    h: int
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -64,6 +64,10 @@ class ROIManager(QObject):
         """序列化所有 ROI 为 JSON 兼容 dict。"""
         def _serialize(roi: ROIModel) -> dict:
             d = asdict(roi)
+            d["x"] = roi.x
+            d["y"] = roi.y
+            d["w"] = roi.w
+            d["h"] = roi.h
             d["slide_path"] = str(roi.slide_path)
             d["created_at"] = roi.created_at.isoformat()
             return d
@@ -71,16 +75,16 @@ class ROIManager(QObject):
         return {"rois": [_serialize(r) for r in self._rois.values()]}
 
     def from_json(self, data: dict[str, Any]) -> None:
-        """从 JSON 数据恢复 ROI。"""
+        """从 JSON 数据恢复 ROI。兼容旧字段名 thumb_x/y/w/h。"""
         self._rois.clear()
         for item in data.get("rois", []):
             roi = ROIModel(
                 id=item["id"],
                 slide_path=Path(item["slide_path"]),
-                thumb_x=item["thumb_x"],
-                thumb_y=item["thumb_y"],
-                thumb_w=item["thumb_w"],
-                thumb_h=item["thumb_h"],
+                x=item.get("x", item.get("thumb_x", 0)),
+                y=item.get("y", item.get("thumb_y", 0)),
+                w=item.get("w", item.get("thumb_w", 0)),
+                h=item.get("h", item.get("thumb_h", 0)),
                 created_at=datetime.fromisoformat(item["created_at"]),
             )
             self._rois[roi.id] = roi
