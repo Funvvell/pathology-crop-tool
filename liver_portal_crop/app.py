@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QRectF, QThread
 from PySide6.QtWidgets import QDialog
 from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
+    QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QMessageBox,
     QProgressBar, QPushButton, QSpinBox, QSplitter,
     QVBoxLayout, QWidget,
@@ -162,6 +162,7 @@ class MainWindow(QMainWindow):
 
         # ── 内容区 ──
         body = QSplitter(Qt.Orientation.Horizontal)
+        body.setHandleWidth(6)
 
         # 左侧：导航缩略图 + 文件列表
         left_panel = QWidget()
@@ -196,6 +197,31 @@ class MainWindow(QMainWindow):
         self._tissue_btn.clicked.connect(self._detect_tissue)
         right_layout.addWidget(self._tissue_btn)
 
+        # ROI 位置编辑（选中后启用）
+        roi_form = QFormLayout()
+        self._roi_x_spin = QSpinBox()
+        self._roi_x_spin.setRange(0, 9999999)
+        self._roi_x_spin.setEnabled(False)
+        roi_form.addRow("X:", self._roi_x_spin)
+        self._roi_y_spin = QSpinBox()
+        self._roi_y_spin.setRange(0, 9999999)
+        self._roi_y_spin.setEnabled(False)
+        roi_form.addRow("Y:", self._roi_y_spin)
+        self._roi_w_spin = QSpinBox()
+        self._roi_w_spin.setRange(1, 9999999)
+        self._roi_w_spin.setEnabled(False)
+        roi_form.addRow("W:", self._roi_w_spin)
+        self._roi_h_spin = QSpinBox()
+        self._roi_h_spin.setRange(1, 9999999)
+        self._roi_h_spin.setEnabled(False)
+        roi_form.addRow("H:", self._roi_h_spin)
+        right_layout.addLayout(roi_form)
+
+        self._roi_x_spin.valueChanged.connect(self._on_roi_spin_changed)
+        self._roi_y_spin.valueChanged.connect(self._on_roi_spin_changed)
+        self._roi_w_spin.valueChanged.connect(self._on_roi_spin_changed)
+        self._roi_h_spin.valueChanged.connect(self._on_roi_spin_changed)
+
         right_layout.addWidget(QLabel("ROI 列表"))
         self._roi_list = QListWidget()
         right_layout.addWidget(self._roi_list)
@@ -221,6 +247,8 @@ class MainWindow(QMainWindow):
         self._roi_manager.roi_removed.connect(self._on_roi_removed)
         self._canvas.roi_created.connect(self._on_canvas_roi_created)
         self._canvas.roi_selected.connect(self._on_canvas_roi_selected)
+        self._canvas.roi_rect_changed.connect(self._on_roi_rect_changed)
+        self._canvas.roi_selection_changed.connect(self._on_roi_selection_changed)
         self._canvas.viewport_changed.connect(self._nav.update_viewport)
         self._nav.navigated.connect(self._on_nav_clicked)
 
@@ -449,6 +477,64 @@ class MainWindow(QMainWindow):
             self._toggle_roi_mode(new_state)
             return
         self._roi_manager.remove_roi(roi_id)
+        if self._selected_roi_id == roi_id:
+            self._selected_roi_id = None
+            self._on_roi_selection_changed("")
+
+    def _on_roi_rect_changed(self, roi_id: str, new_rect) -> None:
+        """ROI 被鼠标拖拽/缩放后更新 ROIModel 坐标。"""
+        for roi in self._roi_manager.all_rois():
+            if roi.id == roi_id:
+                roi.x = int(new_rect.x())
+                roi.y = int(new_rect.y())
+                roi.w = int(new_rect.width())
+                roi.h = int(new_rect.height())
+                self._refresh_roi_list()
+                self._update_roi_spins()
+                break
+
+    def _on_roi_selection_changed(self, roi_id: str) -> None:
+        """ROI 选中状态变化时更新工具栏。"""
+        self._selected_roi_id = roi_id if roi_id else None
+        enabled = bool(roi_id)
+        self._roi_x_spin.setEnabled(enabled)
+        self._roi_y_spin.setEnabled(enabled)
+        self._roi_w_spin.setEnabled(enabled)
+        self._roi_h_spin.setEnabled(enabled)
+        self._update_roi_spins()
+
+    def _on_roi_spin_changed(self) -> None:
+        """工具栏数值变化时更新选中 ROI。"""
+        if self._block_roi_spin or not self._selected_roi_id:
+            return
+        for roi in self._roi_manager.all_rois():
+            if roi.id == self._selected_roi_id:
+                new_rect = QRectF(
+                    self._roi_x_spin.value(), self._roi_y_spin.value(),
+                    self._roi_w_spin.value(), self._roi_h_spin.value(),
+                )
+                roi.x = int(new_rect.x())
+                roi.y = int(new_rect.y())
+                roi.w = int(new_rect.width())
+                roi.h = int(new_rect.height())
+                # 更新画布上的 ROI 矩形
+                self._canvas.update_roi_rect(self._selected_roi_id, new_rect)
+                self._refresh_roi_list()
+                break
+
+    def _update_roi_spins(self) -> None:
+        """同步工具栏 ROI 数值到选中 ROI 的坐标。"""
+        if not self._selected_roi_id:
+            return
+        for roi in self._roi_manager.all_rois():
+            if roi.id == self._selected_roi_id:
+                self._block_roi_spin = True
+                self._roi_x_spin.setValue(roi.x)
+                self._roi_y_spin.setValue(roi.y)
+                self._roi_w_spin.setValue(roi.w)
+                self._roi_h_spin.setValue(roi.h)
+                self._block_roi_spin = False
+                break
 
     def _on_roi_added(self, roi: ROIModel) -> None:
         self._refresh_roi_list()
@@ -700,8 +786,6 @@ class MainWindow(QMainWindow):
                     max_count=params["max_count"],
                 )
 
-            # 清除该文件旧 ROI，添加新的
-            self._roi_manager.clear_slide_rois(slide_path)
             for x, y, w, h in rois_list:
                 roi = ROIModel(
                     slide_path=slide_path,

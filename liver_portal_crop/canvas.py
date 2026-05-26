@@ -17,39 +17,179 @@ from PySide6.QtGui import (
     QBrush, QColor, QImage, QPainter, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QGraphicsItem, QGraphicsPixmapItem, QGraphicsRectItem,
+    QGraphicsEllipseItem, QGraphicsItem, QGraphicsPixmapItem, QGraphicsRectItem,
     QGraphicsScene, QGraphicsView,
 )
 
 from liver_portal_crop.reader import SDPCReader
 
 
-class ROIRectItem(QGraphicsRectItem):
-    """已创建的 ROI 矩形项。"""
+class ResizeHandle(QGraphicsEllipseItem):
+    """ROI 缩放手柄（白色小圆点，拖拽缩放）。"""
 
-    def __init__(self, roi_id: str, rect: QRectF, *args, **kwargs):
+    HANDLE_SIZE = 8
+
+    def __init__(self, parent_roi: QGraphicsRectItem, pos_x: float, pos_y: float):
+        hs = self.HANDLE_SIZE
+        super().__init__(-hs // 2, -hs // 2, hs, hs, parent_roi)
+        self._parent_roi = parent_roi
+        self._pos_x = pos_x
+        self._pos_y = pos_y
+        self.setAcceptHoverEvents(True)
+        self.setBrush(QBrush(Qt.GlobalColor.white))
+        self.setPen(QPen(QColor(0, 120, 215), 2))
+        self.setZValue(1)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+        self._drag_start_rect: QRectF | None = None
+
+    def _cursor_for_pos(self) -> Qt.CursorShape:
+        """根据手柄位置返回鼠标形状。"""
+        corners = {
+            (0, 0): Qt.CursorShape.SizeFDiagCursor,
+            (1, 0): Qt.CursorShape.SizeBDiagCursor,
+            (0, 1): Qt.CursorShape.SizeBDiagCursor,
+            (1, 1): Qt.CursorShape.SizeFDiagCursor,
+        }
+        key = (self._pos_x, self._pos_y)
+        if key in corners:
+            return corners[key]
+        if self._pos_y == 0 or self._pos_y == 1:
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.SizeHorCursor
+
+    def hoverEnterEvent(self, event):
+        self.setCursor(self._cursor_for_pos())
+        super().hoverEnterEvent(event)
+
+    def mousePressEvent(self, event):
+        self._drag_start_rect = self._parent_roi.rect()
+        self._drag_start_scene = event.scenePos()
+        self._parent_roi.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start_rect is None:
+            return
+        delta = event.scenePos() - self._drag_start_scene
+        r = QRectF(self._drag_start_rect)
+
+        if self._pos_x == 0:
+            r.setLeft(r.left() + delta.x())
+        elif self._pos_x == 1:
+            r.setRight(r.right() + delta.x())
+        if self._pos_y == 0:
+            r.setTop(r.top() + delta.y())
+        elif self._pos_y == 1:
+            r.setBottom(r.bottom() + delta.y())
+
+        if r.width() < 20 or r.height() < 20:
+            return
+
+        self._parent_roi.setRect(r)
+        self._update_handles()
+
+    def mouseReleaseEvent(self, event):
+        self._parent_roi.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        if self._drag_start_rect is not None:
+            self._drag_start_rect = None
+            self._drag_start_scene = None
+            self._parent_roi._emit_changed()
+        event.accept()
+
+    def _update_handles(self):
+        """更新父项上所有手柄的位置。"""
+        if hasattr(self._parent_roi, '_update_handle_positions'):
+            self._parent_roi._update_handle_positions()
+
+class ROIRectItem(QGraphicsRectItem):
+    """可缩放/可移动的 ROI 矩形。
+
+    注意：QGraphicsRectItem 不是 QObject，不能使用 Signal。
+    通过 on_rect_changed 回调通知父项。
+    """
+
+    def __init__(self, roi_id: str, rect: QRectF, on_changed=None, *args, **kwargs):
         super().__init__(rect, *args, **kwargs)
         self._roi_id = roi_id
+        self._on_changed = on_changed  # callback: (roi_id, QRectF) -> None
         self.setAcceptHoverEvents(True)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
         self.setPen(QPen(QColor(0, 120, 215), 2))
         self.setBrush(QBrush(QColor(0, 120, 215, 30)))
         self._hover_pen = QPen(QColor(255, 0, 0), 3)
+        self._block_sync = False
+        self._create_handles()
+
+    def _create_handles(self):
+        positions = [
+            (0, 0), (0.5, 0), (1, 0),
+            (0, 0.5), (1, 0.5),
+            (0, 1), (0.5, 1), (1, 1),
+        ]
+        for px, py in positions:
+            ResizeHandle(self, px, py)
+        self._update_handle_positions()
+        # 初始未选中，手柄隐藏
+        for child in self.childItems():
+            child.setVisible(False)
+
+    def _update_handle_positions(self):
+        """将所有手柄移动到矩形对应的位置。"""
+        r = self.rect()
+        for child in self.childItems():
+            if isinstance(child, ResizeHandle):
+                x = r.left() + child._pos_x * r.width()
+                y = r.top() + child._pos_y * r.height()
+                child.setPos(x, y)
+
+    def _emit_changed(self):
+        """通知父项 ROI 变更（场景坐标）。"""
+        if self._block_sync or self._on_changed is None:
+            return
+        self._on_changed(self._roi_id, self.mapRectToScene(self.rect()))
 
     @property
     def roi_id(self) -> str:
         return self._roi_id
+
+    def set_rect_silent(self, rect: QRectF):
+        """设置矩形但不触发回调（用于初始化/恢复）。"""
+        self._block_sync = True
+        self.setRect(rect)
+        self._block_sync = False
+
+    def set_selected_appearance(self, selected: bool):
+        """选中/取消选中时的外观。"""
+        for child in self.childItems():
+            child.setVisible(selected)
+        if selected:
+            self.setPen(QPen(QColor(255, 120, 0), 3))  # 橙色
+        else:
+            self.setPen(QPen(QColor(0, 120, 215), 2))  # 蓝色
 
     def hoverEnterEvent(self, event):
         self.setPen(self._hover_pen)
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
-        self.setPen(QPen(QColor(0, 120, 215), 2))
+        if not self.isSelected():
+            self.setPen(QPen(QColor(0, 120, 215), 2))
         super().hoverLeaveEvent(event)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            self.set_selected_appearance(bool(value))
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged \
+           and not self._block_sync:
+            self._update_handle_positions()
+            if hasattr(value, 'x') and self._on_changed:
+                r = self.mapRectToScene(self.rect())
+                self._on_changed(self._roi_id, r)
+        return super().itemChange(change, value)
 
 
 class WSICanvas(QGraphicsView):
@@ -61,6 +201,8 @@ class WSICanvas(QGraphicsView):
 
     roi_created = Signal(str, QRectF)   # roi_id, rect in level-0 coords
     roi_selected = Signal(str)
+    roi_rect_changed = Signal(str, QRectF)  # roi_id, new_rect
+    roi_selection_changed = Signal(str)     # roi_id (or empty if none selected)
     viewport_changed = Signal(QRectF)    # visible rect in level-0 coords
 
     def __init__(self, parent=None):
@@ -97,6 +239,9 @@ class WSICanvas(QGraphicsView):
         self._frame_h: int = 1024
         self._frame_item: QGraphicsRectItem | None = None
         self._frame_visible: bool = False
+        self._drag_roi_mode: QGraphicsView.DragMode | None = None
+
+        self._scene.selectionChanged.connect(self._on_scene_selection_changed)
 
         # 渲染防抖
         self._render_timer = QTimer()
@@ -146,6 +291,15 @@ class WSICanvas(QGraphicsView):
         self._scene.addItem(item)
         self._tile_items[('thumb',)] = item
 
+    def _on_scene_selection_changed(self) -> None:
+        """场景选中项变化时发射信号。"""
+        selected = self._scene.selectedItems()
+        for item in selected:
+            if isinstance(item, ROIRectItem):
+                self.roi_selection_changed.emit(item.roi_id)
+                return
+        self.roi_selection_changed.emit("")
+
     def set_frame_size(self, w: int, h: int) -> None:
         self._frame_w = w
         self._frame_h = h
@@ -164,9 +318,18 @@ class WSICanvas(QGraphicsView):
             self._hide_frame()
 
     def add_roi_rect(self, roi_id: str, rect: QRectF) -> None:
-        item = ROIRectItem(roi_id, rect)
+        item = ROIRectItem(roi_id, rect, on_changed=self._on_roi_rect_changed)
         self._scene.addItem(item)
         self._roi_items[roi_id] = item
+
+    def _on_roi_rect_changed(self, roi_id: str, new_rect: QRectF) -> None:
+        self.roi_rect_changed.emit(roi_id, new_rect)
+
+    def update_roi_rect(self, roi_id: str, rect: QRectF) -> None:
+        """更新指定 ROI 的矩形（不触发回调）。"""
+        item = self._roi_items.get(roi_id)
+        if item:
+            item.set_rect_silent(rect)
 
     def remove_roi_rect(self, roi_id: str) -> None:
         item = self._roi_items.pop(roi_id, None)
@@ -372,13 +535,26 @@ class WSICanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
-        # 拖动中不加载 tiles，避免同步 DLL 调用阻塞 UI
+        clicked = self.itemAt(event.pos())
+        if isinstance(clicked, ResizeHandle):
+            super().mousePressEvent(event)
+            return
+        if clicked is not None and isinstance(clicked, ROIRectItem):
+            if not clicked.isSelected():
+                self._scene.clearSelection()
+                clicked.setSelected(True)
+            self._drag_roi_mode = self.dragMode()
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            super().mousePressEvent(event)
+            return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
+        if self._drag_roi_mode is not None:
+            self.setDragMode(self._drag_roi_mode)
+            self._drag_roi_mode = None
         self._emit_viewport()
-        # 松手后才刷新 tiles
         self._render_timer.start(100)
 
     def wheelEvent(self, event):
