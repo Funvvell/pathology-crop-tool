@@ -96,8 +96,7 @@ class BatchExporter(QObject):
                 cy = roi.y + roi.h // 2
                 crop_x, crop_y, crop_w, crop_h = center_crop_rect(
                     cx, cy,
-                    self._config.crop_width,
-                    self._config.crop_height,
+                    roi.w, roi.h,
                     reader.full_width,
                     reader.full_height,
                 )
