@@ -28,6 +28,7 @@ a = Analysis(
         + [
             ('icon.ico', '.'),
             ('liver_portal_crop/theme.qss', 'liver_portal_crop'),
+            ('liver_portal_crop/theme_light.qss', 'liver_portal_crop'),
             ('liver_portal_crop/arrow_up.png', 'liver_portal_crop'),
             ('liver_portal_crop/arrow_down.png', 'liver_portal_crop'),
         ]

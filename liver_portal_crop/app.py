@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from liver_portal_crop.theme import load_theme
 from liver_portal_crop.canvas import WSICanvas
 from liver_portal_crop.dialogs import SettingsDialog
 from liver_portal_crop.exporter import BatchExporter, CropConfig
@@ -44,6 +45,7 @@ class MainWindow(QMainWindow):
             output_dir=Path.home() / "liver_crop_output",
         )
         self._current_slide: Path | None = None
+        self._current_theme: str = "dark"
 
         self._setup_ui()
         self._connect_signals()
@@ -259,6 +261,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("退出", self.close)
 
+        view_menu = menubar.addMenu("显示")
+        self._theme_action = QAction("浅色模式", self)
+        self._theme_action.setCheckable(True)
+        self._theme_action.setChecked(False)
+        self._theme_action.triggered.connect(self._toggle_theme)
+        view_menu.addAction(self._theme_action)
+
         help_menu = menubar.addMenu("帮助")
         help_menu.addAction("关于", lambda: QMessageBox.about(
             self, "关于",
@@ -266,6 +275,19 @@ class MainWindow(QMainWindow):
             "作者：Funvvell\n"
             "SDPC 病理切片批量裁剪与导出",
         ))
+
+    def _apply_theme(self, name: str) -> None:
+        qss = load_theme(name)
+        if qss:
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().setStyleSheet(qss)
+        self._current_theme = name
+
+    def _toggle_theme(self) -> None:
+        new_theme = "light" if self._current_theme == "dark" else "dark"
+        self._apply_theme(new_theme)
+        self._theme_action.setText("深色模式" if new_theme == "light" else "浅色模式")
+        self._theme_action.setChecked(new_theme == "light")
 
     # ── 文件管理 ──────────────────────────────────────
 
@@ -698,6 +720,7 @@ class MainWindow(QMainWindow):
                 "crop_width": self._crop_config.crop_width,
                 "crop_height": self._crop_config.crop_height,
                 "output_dir": str(self._crop_config.output_dir),
+                "theme": self._current_theme,
             },
         }
         try:
@@ -730,6 +753,11 @@ class MainWindow(QMainWindow):
             )
             self._frame_w_spin.setValue(self._crop_config.crop_width)
             self._frame_h_spin.setValue(self._crop_config.crop_height)
+            saved_theme = cfg.get("theme", "dark")
+            if saved_theme != self._current_theme:
+                self._apply_theme(saved_theme)
+                self._theme_action.setText("深色模式" if saved_theme == "light" else "浅色模式")
+                self._theme_action.setChecked(saved_theme == "light")
         except Exception:
             pass
 
