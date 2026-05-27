@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
 from PySide6.QtWidgets import QApplication
 from liver_portal_crop.app import MainWindow
+from liver_portal_crop.theme import load_theme, set_theme_dir
 
 
 def _create_arrow_pixmaps(theme_dir: Path):
@@ -44,15 +45,13 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     theme_dir = base_dir / "liver_portal_crop"
+    set_theme_dir(theme_dir)
     _create_arrow_pixmaps(theme_dir)
 
     # 加载 QSS 主题
-    qss_path = theme_dir / "theme.qss"
-    if qss_path.exists():
-        with open(qss_path, encoding="utf-8") as f:
-            qss = f.read()
-            qss = qss.replace("__THEME_DIR__", str(theme_dir).replace("\\", "/"))
-            app.setStyleSheet(qss)
+    qss = load_theme("dark")
+    if qss:
+        app.setStyleSheet(qss)
 
     window = MainWindow()
     window.setWindowIcon(QIcon(str(icon_path)))  # 窗口图标
