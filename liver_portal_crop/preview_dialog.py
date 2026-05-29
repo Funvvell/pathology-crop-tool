@@ -54,17 +54,10 @@ class CheckIndicator(QWidget):
         if self._checked:
             p.setBrush(QBrush(QColor("#0891b2")))
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(rect)
-            # 白色对勾
-            p.setPen(QPen(QColor("#ffffff"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-            p.drawLine(int(rect.x() + 5), int(rect.y() + 10),
-                       int(rect.x() + 8), int(rect.y() + 14))
-            p.drawLine(int(rect.x() + 8), int(rect.y() + 14),
-                       int(rect.x() + 15), int(rect.y() + 6))
         else:
-            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setBrush(QBrush(QColor("#1e293b")))
             p.setPen(QPen(QColor("#64748b"), 1.5))
-            p.drawEllipse(rect)
+        p.drawEllipse(rect)
         p.end()
 
 
@@ -297,19 +290,79 @@ class _TitleBar(QFrame):
         super().mouseReleaseEvent(event)
 
 
-class FullResPreviewDialog(QDialog):
-    """双击缩略图弹出的全分辨率 ROI 预览 — 无边框，自定义标题栏。"""
+class _ArrowButton(QPushButton):
+    """半透明箭头按钮，手绘三角形确保居中。"""
 
-    def __init__(self, reader: SDPCReader, roi: ROIModel, parent=None):
+    def __init__(self, direction: Qt.ArrowType, parent=None):
+        super().__init__("", parent)
+        self._direction = direction
+        self._hovered = False
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def enterEvent(self, event) -> None:
+        self._hovered = True
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        self._hovered = False
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # 背景
+        if not self.isEnabled():
+            bg = QColor(15, 23, 42, 100)
+            color = QColor(71, 85, 105)
+        elif self._hovered:
+            bg = QColor(30, 41, 59, 230)
+            color = QColor(34, 211, 238)
+        else:
+            bg = QColor(15, 23, 42, 180)
+            color = QColor(226, 232, 240)
+
+        p.setBrush(QBrush(bg))
+        p.setPen(QPen(QColor(71, 85, 105, 150), 1))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+        # 三角形
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(color))
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        s = 8  # 三角形半径
+        if self._direction == Qt.ArrowType.LeftArrow:
+            pts = [QPoint(int(cx - s * 0.4), int(cy)),
+                   QPoint(int(cx + s * 0.5), int(cy - s)),
+                   QPoint(int(cx + s * 0.5), int(cy + s))]
+        else:
+            pts = [QPoint(int(cx + s * 0.4), int(cy)),
+                   QPoint(int(cx - s * 0.5), int(cy - s)),
+                   QPoint(int(cx - s * 0.5), int(cy + s))]
+        p.drawPolygon(pts)
+        p.end()
+
+
+class FullResPreviewDialog(QDialog):
+    """双击缩略图弹出的全分辨率 ROI 预览 — 无边框，自定义标题栏，支持左右切换。"""
+
+    check_toggled = Signal(str, bool)  # roi_id, checked
+
+    def __init__(self, rois: list[ROIModel], readers: dict[Path, SDPCReader],
+                 current_index: int, selected_ids: set[str], parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.resize(700, 600)
-        self._reader = reader
-        self._roi = roi
+        self._rois = rois
+        self._readers = readers
+        self._selected_ids = selected_ids
+        self._current_index = current_index
         self._zoom_factor = 1.0
         self._setup_ui()
-        self._load_image()
+        self._navigate_to(current_index)
 
     def _setup_ui(self) -> None:
         self.setStyleSheet("""
@@ -369,21 +422,17 @@ class FullResPreviewDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 自定义标题栏
-        title = f"{self._roi.slide_path.name}  ({self._roi.x}, {self._roi.y}) {self._roi.w}x{self._roi.h}"
+        # 自定义标题栏（纯标题 + 关闭）
+        title = self._make_title_text()
         self._title_bar = _TitleBar(title)
         layout.addWidget(self._title_bar)
 
         # 信息栏
-        self._info_label = QLabel(
-            f"文件: {self._roi.slide_path.name}  |  "
-            f"位置: ({self._roi.x}, {self._roi.y})  |  "
-            f"尺寸: {self._roi.w} x {self._roi.h}"
-        )
+        self._info_label = QLabel()
         self._info_label.setObjectName("previewInfoLabel")
         layout.addWidget(self._info_label)
 
-        # 图像查看
+        # 图像查看（overlay 按钮放在 view 上）
         self._view = QGraphicsView()
         self._scene = QGraphicsScene()
         self._view.setScene(self._scene)
@@ -392,16 +441,57 @@ class FullResPreviewDialog(QDialog):
         self._view.setStyleSheet("QGraphicsView { background: #0f172a; border: none; }")
         layout.addWidget(self._view, 1)
 
+        # 左侧切换按钮（overlay，手绘三角形确保居中）
+        self._prev_btn = _ArrowButton(Qt.LeftArrow, self._view)
+        self._prev_btn.setFixedSize(40, 60)
+        self._prev_btn.clicked.connect(self._prev)
+
+        # 右侧切换按钮（overlay）
+        self._next_btn = _ArrowButton(Qt.RightArrow, self._view)
+        self._next_btn.setFixedSize(40, 60)
+        self._next_btn.clicked.connect(self._next)
+
+        # 左上角勾选指示器（overlay）
+        self._check_indicator = CheckIndicator(self._view)
+        self._check_indicator.setFixedSize(24, 24)
+        self._check_indicator.toggled.connect(self._on_check_toggled)
+        self._check_indicator.raise_()
+
         # 状态栏
         self._status = QLabel("加载中...")
         self._status.setObjectName("previewStatus")
         layout.addWidget(self._status)
 
+    def _make_title_text(self) -> str:
+        roi = self._rois[self._current_index]
+        pos = f"{self._current_index + 1}/{len(self._rois)}"
+        return f"[{pos}]  {roi.slide_path.name}  ({roi.x}, {roi.y}) {roi.w}x{roi.h}"
+
+    def _navigate_to(self, index: int) -> None:
+        """切换到指定索引的 ROI。"""
+        if index < 0 or index >= len(self._rois):
+            return
+        self._current_index = index
+        roi = self._rois[index]
+        self._title_bar.set_title(self._make_title_text())
+        self._info_label.setText(
+            f"文件: {roi.slide_path.name}  |  "
+            f"位置: ({roi.x}, {roi.y})  |  "
+            f"尺寸: {roi.w} x {roi.h}"
+        )
+        self._check_indicator.set_checked(roi.id in self._selected_ids)
+        self._update_nav_buttons()
+        self._load_image()
+
     def _load_image(self) -> None:
+        roi = self._rois[self._current_index]
+        reader = self._readers.get(roi.slide_path)
+        if reader is None:
+            self._scene.clear()
+            self._status.setText("加载失败: 无法读取该切片")
+            return
         try:
-            region = self._reader.extract_region(
-                self._roi.x, self._roi.y, self._roi.w, self._roi.h, level=0,
-            )
+            region = reader.extract_region(roi.x, roi.y, roi.w, roi.h, level=0)
             h, w, ch = region.shape
             qimg = QImage(region.tobytes(), w, h, w * ch,
                           QImage.Format.Format_RGB888)
@@ -412,9 +502,42 @@ class FullResPreviewDialog(QDialog):
             self._view.fitInView(self._scene.sceneRect(),
                                  Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom_factor = self._view.transform().m11()
-            self._status.setText(f"全分辨率: {w}x{h}  |  滚轮缩放 · 左键拖拽")
+            self._status.setText(f"全分辨率: {w}x{h}  |  ← → 切换 · Space 勾选 · 滚轮缩放")
         except Exception as e:
             self._status.setText(f"加载失败: {e}")
+
+    def _prev(self) -> None:
+        self._navigate_to(self._current_index - 1)
+
+    def _next(self) -> None:
+        self._navigate_to(self._current_index + 1)
+
+    def _on_check_toggled(self, checked: bool) -> None:
+        roi = self._rois[self._current_index]
+        if checked:
+            self._selected_ids.add(roi.id)
+        else:
+            self._selected_ids.discard(roi.id)
+        self.check_toggled.emit(roi.id, checked)
+
+    def _update_nav_buttons(self) -> None:
+        self._prev_btn.setEnabled(self._current_index > 0)
+        self._next_btn.setEnabled(self._current_index < len(self._rois) - 1)
+
+    def _reposition_overlays(self) -> None:
+        """将 overlay 按钮定位到图像查看区域的正确位置。"""
+        vp = self._view.viewport()
+        vw, vh = vp.width(), vp.height()
+        # viewport 坐标相对于 view，需要加上 viewport 的偏移
+        ox, oy = vp.x(), vp.y()
+        self._prev_btn.move(ox + 8, oy + (vh - self._prev_btn.height()) // 2)
+        self._next_btn.move(ox + vw - self._next_btn.width() - 8,
+                            oy + (vh - self._next_btn.height()) // 2)
+        self._check_indicator.move(ox + 10, oy + 10)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._reposition_overlays()
 
     def wheelEvent(self, event) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -424,14 +547,20 @@ class FullResPreviewDialog(QDialog):
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.close()
+        elif event.key() == Qt.Key.Key_Left:
+            self._prev()
+        elif event.key() == Qt.Key.Key_Right:
+            self._next()
+        elif event.key() == Qt.Key.Key_Space:
+            new_state = not self._check_indicator.is_checked()
+            self._check_indicator.set_checked(new_state)
+            self._on_check_toggled(new_state)
         elif event.key() == Qt.Key.Key_0:
-            # 重置缩放
             self._view.resetTransform()
             self._view.fitInView(self._scene.sceneRect(),
                                  Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom_factor = self._view.transform().m11()
         elif event.key() == Qt.Key.Key_F:
-            # 适应窗口
             self._view.fitInView(self._scene.sceneRect(),
                                  Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom_factor = self._view.transform().m11()
@@ -648,16 +777,26 @@ class ROIPreviewDialog(QDialog):
         for card in self._cards.values():
             if not card.isHidden():
                 card.set_checked(True)
+                self._selected_ids.add(card.roi_id)
+        self._update_count()
 
     def _deselect_all(self) -> None:
         for card in self._cards.values():
             if not card.isHidden():
                 card.set_checked(False)
+                self._selected_ids.discard(card.roi_id)
+        self._update_count()
 
     def _invert_selection(self) -> None:
         for card in self._cards.values():
             if not card.isHidden():
-                card.set_checked(not card.is_checked())
+                new_state = not card.is_checked()
+                card.set_checked(new_state)
+                if new_state:
+                    self._selected_ids.add(card.roi_id)
+                else:
+                    self._selected_ids.discard(card.roi_id)
+        self._update_count()
 
     def _apply_filter(self, text: str) -> None:
         """按文件名筛选显示。"""
@@ -669,6 +808,10 @@ class ROIPreviewDialog(QDialog):
                 card.show()
             else:
                 card.hide()
+        # 同步显示/隐藏文件分组标题
+        for file_name, header in self._headers.items():
+            visible = text == "全部文件" or file_name == text
+            header.setVisible(visible)
         self._update_count()
 
     def _on_size_changed(self, value: int) -> None:
@@ -679,16 +822,35 @@ class ROIPreviewDialog(QDialog):
         self._reflow_cards()
 
     def _on_double_click(self, roi_id: str) -> None:
-        """双击打开全分辨率预览。"""
-        roi = next((r for r in self._rois if r.id == roi_id), None)
-        if roi is None:
+        """双击打开全分辨率预览，支持左右切换。"""
+        # 构建当前筛选下的可见 ROI 列表
+        filter_text = self._filter_cb.currentText()
+        visible_rois = [
+            r for r in self._rois
+            if filter_text == "全部文件" or r.slide_path.name == filter_text
+        ]
+        clicked_index = next(
+            (i for i, r in enumerate(visible_rois) if r.id == roi_id), -1
+        )
+        if clicked_index < 0:
             return
-        reader = self._readers.get(roi.slide_path)
-        if reader is None:
-            QMessageBox.warning(self, "错误", "无法读取该切片")
-            return
-        dlg = FullResPreviewDialog(reader, roi, self)
+
+        dlg = FullResPreviewDialog(
+            visible_rois, self._readers, clicked_index, self._selected_ids, self
+        )
+        dlg.check_toggled.connect(self._on_viewer_check_toggled)
         dlg.exec()
+        # 关闭后刷新卡片勾选状态
+        for cid, card in self._cards.items():
+            card.set_checked(cid in self._selected_ids)
+        self._update_count()
+
+    def _on_viewer_check_toggled(self, roi_id: str, checked: bool) -> None:
+        """同步全分辨率预览中的勾选变化到卡片。"""
+        card = self._cards.get(roi_id)
+        if card:
+            card.set_checked(checked)
+        self._update_count()
 
     def _on_export(self) -> None:
         if not self._selected_ids:
