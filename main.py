@@ -1,5 +1,6 @@
 """病理裁剪工具 入口点"""
 
+import ctypes
 import sys
 from pathlib import Path
 from PySide6.QtCore import Qt
@@ -33,6 +34,9 @@ def _create_arrow_pixmaps(theme_dir: Path):
 
 
 def main():
+    # 让 Windows 任务栏使用窗口图标而非默认 exe 图标
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PathologyCropTool")
+
     app = QApplication(sys.argv)
     app.setApplicationName("病理裁剪工具")
     app.setOrganizationName("病理裁剪工具")
