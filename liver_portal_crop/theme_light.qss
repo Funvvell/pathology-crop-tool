@@ -450,3 +450,29 @@ QTabBar::tab:hover:!selected {
     background: #e2e8f0;
     color: #1e293b;
 }
+
+/* ── ROI 预览对话框 ── */
+#previewExportBtn {
+    background: #0891b2;
+    color: #fff;
+    border: none;
+    font-weight: 600;
+    padding: 5px 16px;
+    border-radius: 5px;
+    min-height: 26px;
+}
+#previewExportBtn:hover {
+    background: #0e7490;
+}
+#previewExportBtn:pressed {
+    background: #155e75;
+}
+#previewExportBtn:disabled {
+    background: #e2e8f0;
+    color: #94a3b8;
+}
+
+QScrollArea {
+    background: transparent;
+    border: none;
+}
