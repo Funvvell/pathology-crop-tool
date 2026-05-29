@@ -25,6 +25,7 @@ from liver_portal_crop.tissue_detect import (
 )
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
+from liver_portal_crop.preview_dialog import ROIPreviewDialog
 
 SESSION_DIR = Path.home() / ".liver_portal_crop"
 SESSION_FILE = SESSION_DIR / "session.json"
@@ -153,6 +154,11 @@ class MainWindow(QMainWindow):
         self._export_btn.setObjectName("exportBtn")
         self._export_btn.clicked.connect(self._start_export)
         tbar.addWidget(self._export_btn)
+
+        self._preview_export_btn = QPushButton("预览导出")
+        self._preview_export_btn.setObjectName("previewExportBtn")
+        self._preview_export_btn.clicked.connect(self._show_preview_dialog)
+        tbar.addWidget(self._preview_export_btn)
 
         main_layout.addWidget(toolbar)
 
@@ -624,12 +630,7 @@ class MainWindow(QMainWindow):
             )
 
     def _start_export(self) -> None:
-        # 清理上次导出线程
-        if hasattr(self, '_export_thread') and self._export_thread.isRunning():
-            self._exporter.cancel()
-            self._export_thread.quit()
-            self._export_thread.wait(3000)
-
+        """批量导出全部 ROI。"""
         self._cleanup_stale_rois()
         all_rois = self._roi_manager.all_rois()
 
@@ -645,40 +646,75 @@ class MainWindow(QMainWindow):
             self, "确认导出",
             f"将导出 {len(all_rois)} 个 ROI（来自 {file_count} 个文件）\n\n"
             f"输出目录: {self._crop_config.output_dir}\n"
-            f"尺寸: {crop_w}×{crop_h}\n"
+            f"尺寸: {crop_w}x{crop_h}\n"
             f"继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
+        self._run_export(all_rois)
+
+    def _show_preview_dialog(self) -> None:
+        """打开 ROI 预览对话框，选择后导出选中项。"""
+        self._cleanup_stale_rois()
+        all_rois = self._roi_manager.all_rois()
+
+        if not all_rois:
+            QMessageBox.information(self, "提示", "请先标注 ROI")
+            return
+
+        dlg = ROIPreviewDialog(
+            all_rois,
+            self._readers,
+            self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected_ids = set(dlg.get_selected_ids())
+        selected_rois = [r for r in all_rois if r.id in selected_ids]
+        if selected_rois:
+            self._run_export(selected_rois)
+
+    def _run_export(self, rois: list) -> None:
+        """执行批量导出（共用逻辑）。"""
+        # 清理上次导出线程
+        if hasattr(self, '_export_thread') and self._export_thread.isRunning():
+            self._exporter.cancel()
+            self._export_thread.quit()
+            self._export_thread.wait(3000)
+
+        crop_w = self._frame_w_spin.value()
+        crop_h = self._frame_h_spin.value()
+
         self._crop_config.crop_width = crop_w
         self._crop_config.crop_height = crop_h
         self._crop_config.mag_label = self._mag_cb.currentText().rstrip("xX")
 
         # 显示进度条
-        self._progress_bar.setRange(0, len(all_rois))
+        self._progress_bar.setRange(0, len(rois))
         self._progress_bar.setValue(0)
-        self._progress_bar.setFormat(f"0/{len(all_rois)}")
+        self._progress_bar.setFormat(f"0/{len(rois)}")
         self._progress_bar.show()
         self._cancel_btn.show()
         self._export_btn.setEnabled(False)
+        self._preview_export_btn.setEnabled(False)
 
-        # 传路径字典给线程，由线程在后台打开 reader（不阻塞主线程）
+        # 传路径字典给线程
         path_input: dict[Path, str | SDPCReader] = {}
-        for path in set(roi.slide_path for roi in all_rois):
+        for path in set(roi.slide_path for roi in rois):
             if path in self._readers:
-                path_input[path] = str(path)  # 传路径，线程内再打开
+                path_input[path] = str(path)
 
         self._exporter = BatchExporter(self._crop_config)
         self._export_thread = QThread()
         self._exporter.moveToThread(self._export_thread)
 
         self._export_thread.started.connect(
-            lambda: self._exporter.run(all_rois, path_input),
+            lambda: self._exporter.run(rois, path_input),
             Qt.DirectConnection,
         )
-        total_rois = len(all_rois)
         self._exporter.progress.connect(lambda v, t: (
             self._progress_bar.setValue(v),
             self._progress_bar.setFormat(f"{v}/{t}"),
@@ -701,6 +737,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.hide()
         self._cancel_btn.hide()
         self._export_btn.setEnabled(True)
+        self._preview_export_btn.setEnabled(True)
         self._status_label.setText("导出完成")
         QMessageBox.information(
             self, "导出完成",
