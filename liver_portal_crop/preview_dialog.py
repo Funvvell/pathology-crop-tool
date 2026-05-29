@@ -97,3 +97,84 @@ class ROICardWidget(QWidget):
     def mouseDoubleClickEvent(self, event) -> None:
         self.double_clicked.emit(self._roi_id)
         super().mouseDoubleClickEvent(event)
+
+
+class ThumbnailWorker(QThread):
+    """后台生成 ROI 缩略图。"""
+
+    thumbnail_ready = Signal(str, QPixmap)  # roi_id, pixmap
+    finished_all = Signal()
+    progress = Signal(int, int)  # current, total
+
+    def __init__(self, rois: list[ROIModel],
+                 readers: dict[Path, SDPCReader],
+                 thumb_size: int = 120,
+                 parent=None):
+        super().__init__(parent)
+        self._rois = rois
+        self._readers = readers
+        self._thumb_size = thumb_size
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        total = len(self._rois)
+        for idx, roi in enumerate(self._rois):
+            if self._cancel:
+                break
+            self.progress.emit(idx + 1, total)
+            try:
+                reader = self._readers.get(roi.slide_path)
+                if reader is None:
+                    continue
+                pixmap = self._generate_thumbnail(reader, roi)
+                if pixmap:
+                    self.thumbnail_ready.emit(roi.id, pixmap)
+            except Exception:
+                pass
+        self.finished_all.emit()
+
+    def _generate_thumbnail(self, reader: SDPCReader, roi: ROIModel) -> QPixmap | None:
+        """选择合适的金字塔层级生成缩略图。"""
+        level = self._pick_level(reader, roi.w, roi.h, self._thumb_size)
+        ds = reader.levels[level].downsample
+
+        # ROI 坐标在 level 0，转为 target level 坐标
+        lx = int(roi.x / ds)
+        ly = int(roi.y / ds)
+        lw = max(1, int(roi.w / ds))
+        lh = max(1, int(roi.h / ds))
+
+        # clamp to level bounds
+        lv_w, lv_h = reader.levels[level].width, reader.levels[level].height
+        lx = max(0, min(lx, lv_w - 1))
+        ly = max(0, min(ly, lv_h - 1))
+        lw = min(lw, lv_w - lx)
+        lh = min(lh, lv_h - ly)
+        if lw <= 0 or lh <= 0:
+            return None
+
+        region = reader._read_level_region(level, lx, ly, lw, lh)
+        img = Image.fromarray(region)
+        img.thumbnail((self._thumb_size, self._thumb_size), Image.Resampling.LANCZOS)
+
+        # PIL → QPixmap
+        rgb = img.convert("RGB")
+        data = rgb.tobytes()
+        qimg = QImage(data, rgb.width, rgb.height,
+                       rgb.width * 3, QImage.Format.Format_RGB888)
+        return QPixmap.fromImage(qimg)
+
+    @staticmethod
+    def _pick_level(reader: SDPCReader, roi_w: int, roi_h: int,
+                    target_size: int) -> int:
+        """选择能满足缩略图尺寸的最高金字塔层级。"""
+        for level in range(reader.level_count - 1, -1, -1):
+            ds = reader.levels[level].downsample
+            lw = int(roi_w / ds)
+            lh = int(roi_h / ds)
+            if lw >= target_size and lh >= target_size:
+                return level
+        return 0
