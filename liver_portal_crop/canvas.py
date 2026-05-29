@@ -331,6 +331,15 @@ class WSICanvas(QGraphicsView):
         if item:
             item.set_rect_silent(rect)
 
+    def select_roi(self, roi_id: str) -> None:
+        """选中指定 ROI（外部调用，如从列表选中）。"""
+        self._scene.blockSignals(True)
+        self._scene.clearSelection()
+        self._scene.blockSignals(False)
+        item = self._roi_items.get(roi_id)
+        if item:
+            item.setSelected(True)
+
     def remove_roi_rect(self, roi_id: str) -> None:
         item = self._roi_items.pop(roi_id, None)
         if item:

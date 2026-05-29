@@ -251,6 +251,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._file_list.currentRowChanged.connect(self._on_file_selected)
+        self._roi_list.currentRowChanged.connect(self._on_roi_list_selected)
         self._roi_manager.roi_added.connect(self._on_roi_added)
         self._roi_manager.roi_removed.connect(self._on_roi_removed)
         self._canvas.roi_created.connect(self._on_canvas_roi_created)
@@ -530,6 +531,17 @@ class MainWindow(QMainWindow):
         self._roi_w_spin.setEnabled(enabled)
         self._roi_h_spin.setEnabled(enabled)
         self._update_roi_spins()
+
+    def _on_roi_list_selected(self, row: int) -> None:
+        """右侧列表选中 ROI 时，画布同步选中。"""
+        if row < 0:
+            return
+        item = self._roi_list.item(row)
+        if item is None:
+            return
+        roi_id = item.data(Qt.ItemDataRole.UserRole)
+        if roi_id:
+            self._canvas.select_roi(roi_id)
 
     def _on_roi_spin_changed(self) -> None:
         """工具栏数值变化时更新选中 ROI。"""
