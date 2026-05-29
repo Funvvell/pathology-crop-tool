@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#0891b2"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="96" ry="96" fill="url(#bg)"/>
+
+  <!-- Microscope lens / cell circle - centered -->
+  <circle cx="256" cy="256" r="120" stroke="url(#accent)" stroke-width="22" fill="none"/>
+
+  <!-- Inner cell detail -->
+  <circle cx="256" cy="256" r="50" fill="#0891b2" opacity="0.25"/>
+  <circle cx="270" cy="242" r="20" fill="#06b6d4" opacity="0.45"/>
+
+  <!-- Crop handles - top-left -->
+  <path d="M140 170 L140 136 L174 136" stroke="#22d3ee" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <!-- Crop handles - top-right -->
+  <path d="M372 170 L372 136 L338 136" stroke="#22d3ee" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <!-- Crop handles - bottom-left -->
+  <path d="M140 342 L140 376 L174 376" stroke="#22d3ee" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <!-- Crop handles - bottom-right -->
+  <path d="M372 342 L372 376 L338 376" stroke="#22d3ee" stroke-width="16" stroke-linecap="round" fill="none"/>
+</svg>

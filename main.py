@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
 from liver_portal_crop.app import MainWindow
 from liver_portal_crop.theme import load_theme, set_theme_dir
@@ -39,10 +40,23 @@ def main():
     # 运行时路径：PyInstaller 打包后使用 sys._MEIPASS
     base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
 
-    # 应用图标
-    icon_path = base_dir / "icon.ico"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    # 应用图标：优先 SVG（矢量清晰），fallback 到 ICO
+    icon = QIcon()
+    svg_path = base_dir / "icon.svg"
+    ico_path = base_dir / "icon.ico"
+    if svg_path.exists():
+        renderer = QSvgRenderer(str(svg_path))
+        for size in (16, 32, 48, 64, 128, 256):
+            pix = QPixmap(size, size)
+            pix.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            renderer.render(p)
+            p.end()
+            icon.addPixmap(pix)
+    elif ico_path.exists():
+        icon = QIcon(str(ico_path))
+    app.setWindowIcon(icon)
 
     theme_dir = base_dir / "liver_portal_crop"
     set_theme_dir(theme_dir)
@@ -54,7 +68,7 @@ def main():
         app.setStyleSheet(qss)
 
     window = MainWindow()
-    window.setWindowIcon(QIcon(str(icon_path)))  # 窗口图标
+    window.setWindowIcon(icon)  # 窗口图标
     window.show()
     sys.exit(app.exec())
 

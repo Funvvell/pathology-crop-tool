@@ -27,6 +27,7 @@ a = Analysis(
         ([(_sdpc_dll_src, 'sdpc/WINDOWS/dll')] if _sdpc_dll_src else [])
         + [
             ('icon.ico', '.'),
+            ('icon.svg', '.'),
             ('liver_portal_crop/theme.qss', 'liver_portal_crop'),
             ('liver_portal_crop/theme_light.qss', 'liver_portal_crop'),
             ('liver_portal_crop/arrow_up.png', 'liver_portal_crop'),
