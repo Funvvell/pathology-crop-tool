@@ -10,12 +10,13 @@ from PIL import Image
 from PySide6.QtCore import Qt, QRectF, QThread, QTimer, Signal, QSize, QPoint
 from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QBrush, QColor, QFont, QMouseEvent,
+    QCloseEvent,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QFormLayout, QGraphicsPixmapItem,
     QGraphicsScene, QGraphicsView, QGridLayout, QHBoxLayout, QLabel,
-    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QVBoxLayout, QWidget, QComboBox, QFrame,
+    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSlider, QVBoxLayout, QWidget, QComboBox, QFrame,
 )
 
 from liver_portal_crop.reader import SDPCReader
@@ -824,7 +825,7 @@ class ROIPreviewDialog(QDialog):
     def _on_double_click(self, roi_id: str) -> None:
         """双击打开全分辨率预览，支持左右切换。"""
         # 构建当前筛选下的可见 ROI 列表
-        filter_text = self._filter_cb.currentText()
+        filter_text = self._filter_cb.currentText() if self._filter_cb else "全部文件"
         visible_rois = [
             r for r in self._rois
             if filter_text == "全部文件" or r.slide_path.name == filter_text
@@ -857,6 +858,330 @@ class ROIPreviewDialog(QDialog):
             QMessageBox.information(self, "提示", "请先勾选要导出的 ROI")
             return
         self.accept()
+
+    def get_selected_ids(self) -> list[str]:
+        return list(self._selected_ids)
+
+    def closeEvent(self, event) -> None:
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(3000)
+        super().closeEvent(event)
+
+
+# ── 独立预览组件（嵌入主窗口，QStackedWidget 切换）─────────
+
+class ROIPreviewPanel(QWidget):
+    """ROI 预览面板 — 缩略图网格 + 双击全分辨率预览。
+
+    嵌入主窗口的 QStackedWidget 中，与 WSI Canvas 切换显示。
+    主窗口选中 ROI 时调用 on_roi_selected() 高亮对应卡片。
+    ROI 增删改时调用 on_rois_changed() 刷新缩略图。
+    """
+
+    roi_selected = Signal(str)  # 面板选中 ROI → 通知主窗口
+
+    def __init__(self, rois: list[ROIModel],
+                 readers: dict[Path, SDPCReader],
+                 toolbar_buttons: tuple | None = None,
+                 filter_cb: QComboBox | None = None,
+                 count_label: QLabel | None = None,
+                 parent=None):
+        super().__init__(parent)
+        self._rois = list(rois)
+        self._readers = readers
+        self._cards: dict[str, ROICardWidget] = {}
+        self._selected_ids: set[str] = set()
+        self._highlighted_id: str | None = None
+        self._thumb_size = 120
+        self._worker: ThumbnailWorker | None = None
+        self._reflow_timer = QTimer()
+        self._reflow_timer.setSingleShot(True)
+        self._reflow_timer.setInterval(150)
+        self._reflow_timer.timeout.connect(self._reflow_cards)
+        self._headers: dict[str, QLabel] = {}
+        self._file_groups: list[tuple[str, list[ROIModel]]] = []
+        # 外部传入的工具栏控件
+        self._filter_cb = filter_cb
+        self._count_label = count_label
+        if toolbar_buttons and len(toolbar_buttons) >= 3:
+            toolbar_buttons[0].clicked.connect(self._select_all)
+            toolbar_buttons[1].clicked.connect(self._deselect_all)
+            toolbar_buttons[2].clicked.connect(self._invert_selection)
+        if self._filter_cb:
+            self._filter_cb.currentTextChanged.connect(self._apply_filter)
+        self._setup_ui()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._cards and self._rois:
+            QTimer.singleShot(0, self._init_cards)
+
+    def _init_cards(self) -> None:
+        self._rebuild_file_groups()
+        self._reflow_cards()
+        self._start_thumbnail_generation()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # 进度条
+        self._thumb_progress = QProgressBar()
+        self._thumb_progress.setRange(0, max(1, len(self._rois)))
+        self._thumb_progress.setValue(0)
+        self._thumb_progress.setFormat("生成缩略图: %v/%m")
+        layout.addWidget(self._thumb_progress)
+
+        # 滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._grid_container = QWidget()
+        self._grid_container.setStyleSheet("background: transparent;")
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setSpacing(8)
+        self._grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        scroll.setWidget(self._grid_container)
+        layout.addWidget(scroll, 1)
+
+        # 底部：缩略图大小滑块
+        bottom = QHBoxLayout()
+        bottom.addWidget(QLabel("缩略图大小:"))
+
+        self._size_slider = QSlider(Qt.Orientation.Horizontal)
+        self._size_slider.setRange(80, 200)
+        self._size_slider.setValue(self._thumb_size)
+        self._size_slider.setFixedWidth(160)
+        self._size_slider.valueChanged.connect(self._on_size_changed)
+        bottom.addWidget(self._size_slider)
+
+        self._size_label = QLabel(f"{self._thumb_size}px")
+        bottom.addWidget(self._size_label)
+
+        bottom.addStretch()
+        layout.addLayout(bottom)
+
+    def _rebuild_file_groups(self) -> None:
+        groups: dict[str, list[ROIModel]] = {}
+        for roi in self._rois:
+            groups.setdefault(roi.slide_path.name, []).append(roi)
+        self._file_groups = [(name, groups[name]) for name in sorted(groups.keys())]
+
+        current = self._filter_cb.currentText() if self._filter_cb else "全部文件"
+        if self._filter_cb:
+            self._filter_cb.blockSignals(True)
+            self._filter_cb.clear()
+            self._filter_cb.addItem("全部文件")
+            for name, _ in self._file_groups:
+                self._filter_cb.addItem(name)
+            idx = self._filter_cb.findText(current)
+            self._filter_cb.setCurrentIndex(max(0, idx))
+            self._filter_cb.blockSignals(False)
+
+    def _reflow_cards(self) -> None:
+        available = self._grid_container.width() - 20
+        if available < 50:
+            return
+
+        card_w = self._thumb_size + 16
+        cols = max(1, available // card_w)
+
+        while self._grid_layout.count():
+            self._grid_layout.takeAt(0)
+
+        for file_name, _ in self._file_groups:
+            if file_name not in self._headers:
+                header = QLabel(f"  {file_name}")
+                header.setStyleSheet(
+                    "font-weight: 600; font-size: 12px; color: #0891b2; "
+                    "padding: 4px 0; background: transparent;"
+                )
+                self._headers[file_name] = header
+
+        for _, rois in self._file_groups:
+            for roi in rois:
+                if roi.id not in self._cards:
+                    card = ROICardWidget(
+                        roi.id, roi.w, roi.h, self._thumb_size
+                    )
+                    card.double_clicked.connect(self._on_double_click)
+                    card.check_toggled.connect(self._on_card_check_toggled)
+                    self._cards[roi.id] = card
+
+        row = 0
+        filter_text = self._filter_cb.currentText() if self._filter_cb else "全部文件"
+        for file_name, rois in self._file_groups:
+            header_visible = filter_text == "全部文件" or file_name == filter_text
+            if file_name in self._headers:
+                self._headers[file_name].setVisible(header_visible)
+                self._grid_layout.addWidget(self._headers[file_name], row, 0, 1, cols)
+            row += 1
+            for i, roi in enumerate(rois):
+                card = self._cards.get(roi.id)
+                if card is None:
+                    continue
+                card_visible = filter_text == "全部文件" or roi.slide_path.name == filter_text
+                card.setVisible(card_visible)
+                col = i % cols
+                if col == 0 and i > 0:
+                    row += 1
+                self._grid_layout.addWidget(card, row, col)
+            row += 1
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._reflow_timer.start()
+
+    def _start_thumbnail_generation(self) -> None:
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(3000)
+        self._thumb_progress.show()
+        self._thumb_progress.setRange(0, max(1, len(self._rois)))
+        self._thumb_progress.setValue(0)
+        self._worker = ThumbnailWorker(
+            self._rois, self._readers, self._thumb_size
+        )
+        self._worker.thumbnail_ready.connect(self._on_thumbnail_ready)
+        self._worker.progress.connect(self._on_thumb_progress)
+        self._worker.finished_all.connect(self._on_thumbnails_done)
+        self._worker.start()
+
+    def _on_thumbnail_ready(self, roi_id: str, pixmap: QPixmap) -> None:
+        card = self._cards.get(roi_id)
+        if card:
+            card.set_thumbnail(pixmap)
+
+    def _on_thumb_progress(self, current: int, total: int) -> None:
+        self._thumb_progress.setMaximum(total)
+        self._thumb_progress.setValue(current)
+
+    def _on_thumbnails_done(self) -> None:
+        self._thumb_progress.hide()
+
+    def _on_card_check_toggled(self, roi_id: str, checked: bool) -> None:
+        if checked:
+            self._selected_ids.add(roi_id)
+        else:
+            self._selected_ids.discard(roi_id)
+        self._update_count()
+
+    def _update_count(self) -> None:
+        if self._count_label:
+            self._count_label.setText(
+                f"已选: {len(self._selected_ids)}/{len(self._rois)}"
+            )
+
+    def _select_all(self) -> None:
+        for card in self._cards.values():
+            if not card.isHidden():
+                card.set_checked(True)
+                self._selected_ids.add(card.roi_id)
+        self._update_count()
+
+    def _deselect_all(self) -> None:
+        for card in self._cards.values():
+            if not card.isHidden():
+                card.set_checked(False)
+                self._selected_ids.discard(card.roi_id)
+        self._update_count()
+
+    def _invert_selection(self) -> None:
+        for card in self._cards.values():
+            if not card.isHidden():
+                new_state = not card.is_checked()
+                card.set_checked(new_state)
+                if new_state:
+                    self._selected_ids.add(card.roi_id)
+                else:
+                    self._selected_ids.discard(card.roi_id)
+        self._update_count()
+
+    def _apply_filter(self, text: str) -> None:
+        for roi_id, card in self._cards.items():
+            roi = next((r for r in self._rois if r.id == roi_id), None)
+            if roi is None:
+                continue
+            card.setVisible(text == "全部文件" or roi.slide_path.name == text)
+        for file_name, header in self._headers.items():
+            header.setVisible(text == "全部文件" or file_name == text)
+        self._update_count()
+
+    def _on_size_changed(self, value: int) -> None:
+        self._thumb_size = value
+        self._size_label.setText(f"{value}px")
+        for card in self._cards.values():
+            card.resize_thumb(value)
+        self._reflow_cards()
+
+    def _on_double_click(self, roi_id: str) -> None:
+        filter_text = self._filter_cb.currentText() if self._filter_cb else "全部文件"
+        visible_rois = [
+            r for r in self._rois
+            if filter_text == "全部文件" or r.slide_path.name == filter_text
+        ]
+        clicked_index = next(
+            (i for i, r in enumerate(visible_rois) if r.id == roi_id), -1
+        )
+        if clicked_index < 0:
+            return
+        dlg = FullResPreviewDialog(
+            visible_rois, self._readers, clicked_index, self._selected_ids, self
+        )
+        dlg.check_toggled.connect(self._on_viewer_check_toggled)
+        dlg.exec()
+        for cid, card in self._cards.items():
+            card.set_checked(cid in self._selected_ids)
+        self._update_count()
+
+    def _on_viewer_check_toggled(self, roi_id: str, checked: bool) -> None:
+        card = self._cards.get(roi_id)
+        if card:
+            card.set_checked(checked)
+        self._update_count()
+
+    # ── 外部接口 ──────────────────────────────────────
+
+    def on_roi_selected(self, roi_id: str) -> None:
+        """主窗口选中 ROI 时调用：高亮对应卡片并滚动到可见位置。"""
+        self._highlighted_id = roi_id
+        # 清除所有高亮
+        for cid, c in self._cards.items():
+            c.setStyleSheet("background: transparent;")
+        card = self._cards.get(roi_id)
+        if card and not card.isHidden():
+            card.setStyleSheet(
+                "background: rgba(8, 145, 178, 0.15); "
+                "border: 1px solid #0891b2; border-radius: 6px;"
+            )
+            scroll = self.findChild(QScrollArea)
+            if scroll:
+                scroll.ensureWidgetVisible(card)
+
+    def on_rois_changed(self, rois: list[ROIModel],
+                        readers: dict[Path, SDPCReader]) -> None:
+        """ROI 增删改时调用：刷新缩略图网格。"""
+        # 保留仍然存在的选中 ID
+        new_ids = {r.id for r in rois}
+        self._selected_ids = {rid for rid in self._selected_ids if rid in new_ids}
+        self._rois = list(rois)
+        self._readers = readers
+        for card in self._cards.values():
+            self._grid_layout.removeWidget(card)
+            card.deleteLater()
+        for header in self._headers.values():
+            self._grid_layout.removeWidget(header)
+            header.deleteLater()
+        self._cards.clear()
+        self._headers.clear()
+        if self._count_label:
+            self._count_label.setText(f"已选: {len(self._selected_ids)}/{len(self._rois)}")
+        self._rebuild_file_groups()
+        self._reflow_cards()
+        self._start_thumbnail_generation()
 
     def get_selected_ids(self) -> list[str]:
         return list(self._selected_ids)

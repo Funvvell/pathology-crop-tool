@@ -85,7 +85,7 @@ def _remove_small_objects(mask: np.ndarray, min_pct: float = 0.02) -> np.ndarray
         return mask
     thr_area = np.max(areas) * min_pct
     return morphology.remove_small_objects(
-        mask.astype(bool), min_size=int(thr_area), connectivity=2
+        mask.astype(bool), max_size=int(thr_area), connectivity=2
     ).astype(np.uint8) * 255
 
 

@@ -371,7 +371,8 @@ def infer_cloud(
     if seg_only:
         params["slim"] = "true"
 
-    logger.info("云端推理: resolution=%s, seg_only=%s", resolution, seg_only)
+    logger.info("云端推理: resolution=%s, seg_only=%s, size=%dx%d, upload=%dKB",
+                resolution, seg_only, *send_img.size, len(img_bytes) // 1024)
 
     try:
         resp = requests.post(

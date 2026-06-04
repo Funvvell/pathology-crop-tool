@@ -175,6 +175,11 @@ class DeepLIIFResultsDialog(QDialog):
 
     def __init__(self, results: list[dict], tile_size: int = 512, parent=None):
         super().__init__(parent)
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+        )
         self.setWindowTitle("DeepLIIF 分析结果")
         self.setMinimumSize(960, 680)
         self.resize(1160, 780)
@@ -560,7 +565,7 @@ class DeepLIIFResultsDialog(QDialog):
             seg_thresh=seg_thresh,
             size_thresh=size_thresh,
         )
-        thread = QThread(self)
+        thread = QThread()  # 无 parent，避免 dialog 销毁时连带销毁线程
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_reprocess_finished)
