@@ -26,6 +26,11 @@ from liver_portal_crop.tissue_detect import (
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
 from liver_portal_crop.preview_dialog import ROIPreviewDialog
+from liver_portal_crop.analysis_dialog import DeepLIIFAnalysisDialog
+from liver_portal_crop.results_viewer import DeepLIIFResultsDialog
+from liver_portal_crop.deepliif_runner import (
+    DeepLIIFMode, DeepLIIFWorker, check_model_available, get_default_model_dir,
+)
 
 SESSION_DIR = Path.home() / ".liver_portal_crop"
 SESSION_FILE = SESSION_DIR / "session.json"
@@ -139,7 +144,8 @@ class MainWindow(QMainWindow):
         self._cancel_btn = QPushButton("✕")
         self._cancel_btn.setFixedSize(22, 22)
         self._cancel_btn.setObjectName("cancelBtn")
-        self._cancel_btn.clicked.connect(self._cancel_export)
+        self._cancel_op = None  # 取消委托：None=导出, callable=自定义
+        self._cancel_btn.clicked.connect(self._on_cancel_clicked)
         self._cancel_btn.hide()
         tbar.addWidget(self._cancel_btn)
 
@@ -204,6 +210,16 @@ class MainWindow(QMainWindow):
         self._tissue_btn = QPushButton("组织检测 (HistoKit)")
         self._tissue_btn.clicked.connect(self._detect_tissue)
         right_layout.addWidget(self._tissue_btn)
+
+        self._deepliif_btn = QPushButton("🔬 DeepLIIF 分析")
+        self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
+        self._deepliif_btn.clicked.connect(self._run_deepliif)
+        right_layout.addWidget(self._deepliif_btn)
+
+        self._clear_overlay_btn = QPushButton("清除分析叠加")
+        self._clear_overlay_btn.clicked.connect(self._clear_analysis_overlay)
+        self._clear_overlay_btn.setVisible(False)
+        right_layout.addWidget(self._clear_overlay_btn)
 
         # ROI 位置编辑（选中后启用）
         roi_form = QFormLayout()
@@ -274,6 +290,11 @@ class MainWindow(QMainWindow):
         self._theme_action.setChecked(False)
         self._theme_action.triggered.connect(self._toggle_theme)
         view_menu.addAction(self._theme_action)
+
+        analysis_menu = menubar.addMenu("分析")
+        analysis_menu.addAction("DeepLIIF 分析...", self._run_deepliif)
+        analysis_menu.addSeparator()
+        analysis_menu.addAction("设置模型路径...", self._set_deepliif_model_dir)
 
         help_menu = menubar.addMenu("帮助")
         help_menu.addAction("关于", lambda: QMessageBox.about(
@@ -523,7 +544,7 @@ class MainWindow(QMainWindow):
                 break
 
     def _on_roi_selection_changed(self, roi_id: str) -> None:
-        """ROI 选中状态变化时更新工具栏。"""
+        """ROI 选中状态变化时更新工具栏和列表。"""
         self._selected_roi_id = roi_id if roi_id else None
         enabled = bool(roi_id)
         self._roi_x_spin.setEnabled(enabled)
@@ -531,6 +552,20 @@ class MainWindow(QMainWindow):
         self._roi_w_spin.setEnabled(enabled)
         self._roi_h_spin.setEnabled(enabled)
         self._update_roi_spins()
+
+        # 同步右侧列表选中状态（阻止信号避免循环）
+        if roi_id:
+            self._roi_list.blockSignals(True)
+            for i in range(self._roi_list.count()):
+                item = self._roi_list.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) == roi_id:
+                    self._roi_list.setCurrentRow(i)
+                    break
+            self._roi_list.blockSignals(False)
+        else:
+            self._roi_list.blockSignals(True)
+            self._roi_list.clearSelection()
+            self._roi_list.blockSignals(False)
 
     def _on_roi_list_selected(self, row: int) -> None:
         """右侧列表选中 ROI 时，画布同步选中。"""
@@ -745,6 +780,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_exporter'):
             self._exporter.cancel()
 
+    def _on_cancel_clicked(self) -> None:
+        """取消按钮点击 — 委托给当前操作。"""
+        if self._cancel_op is not None:
+            self._cancel_op()
+        else:
+            self._cancel_export()
+
     def _on_export_finished(self) -> None:
         self._progress_bar.hide()
         self._cancel_btn.hide()
@@ -880,6 +922,223 @@ class MainWindow(QMainWindow):
 
         self._refresh_roi_list()
         self._status_label.setText(f"组织检测: 共 {total_all} 个 ROI")
+
+    # ── DeepLIIF 分析 ──────────────────────────────────
+
+    def _run_deepliif(self) -> None:
+        """启动 DeepLIIF 分析流程。"""
+        if not self._readers:
+            QMessageBox.information(self, "提示", "请先加载切片")
+            return
+
+        all_rois = self._roi_manager.all_rois()
+        if not all_rois:
+            QMessageBox.information(self, "提示", "请先标注或生成 ROI")
+            return
+
+        # 获取当前倍率
+        mag_text = self._mag_cb.currentText() if hasattr(self, '_mag_cb') else "40x"
+
+        dlg = DeepLIIFAnalysisDialog(
+            rois=all_rois,
+            readers=self._readers,
+            current_slide=self._current_slide,
+            magnification=mag_text,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        params = dlg.get_params()
+        selected_rois = dlg.get_selected_rois()
+        if not selected_rois:
+            QMessageBox.information(self, "提示", "未选择任何 ROI")
+            return
+
+        # 确定推理模式
+        if params["mode"] == "local":
+            mode = DeepLIIFMode.LOCAL
+            model_dir = params["model_dir"]
+            if not model_dir:
+                QMessageBox.warning(self, "错误", "本地模式需要指定模型目录")
+                return
+            ok, msg = check_model_available(model_dir)
+            if not ok:
+                QMessageBox.warning(self, "模型不可用", msg)
+                return
+        else:
+            mode = DeepLIIFMode.CLOUD
+            model_dir = None
+
+        # 显示进度
+        self._deepliif_btn.setEnabled(False)
+        self._progress_bar.setVisible(True)
+        self._cancel_btn.setVisible(True)
+        self._progress_bar.setMaximum(len(selected_rois))
+        self._progress_bar.setValue(0)
+        self._status_label.setText("DeepLIIF 分析中...")
+
+        # 创建 Worker 和线程（不能有 parent，否则无法 moveToThread）
+        self._deepliif_worker = DeepLIIFWorker(
+            mode=mode,
+            rois=selected_rois,
+            readers=self._readers,
+            model_dir=model_dir,
+            tile_size=params["tile_size"],
+            seg_only=params["seg_only"],
+        )
+        self._deepliif_thread = QThread()
+        self._deepliif_worker.moveToThread(self._deepliif_thread)
+
+        # 信号连接
+        self._deepliif_thread.started.connect(self._deepliif_worker.run)
+        self._deepliif_worker.progress.connect(self._on_deepliif_progress)
+        self._deepliif_worker.all_finished.connect(self._on_deepliif_finished)
+        self._deepliif_worker.error.connect(self._on_deepliif_error)
+        self._deepliif_worker.all_finished.connect(self._deepliif_cleanup)
+        self._deepliif_worker.error.connect(self._deepliif_cleanup)
+
+        # 设置取消委托
+        self._cancel_op = lambda: self._deepliif_worker.cancel() if self._deepliif_worker else None
+
+        self._deepliif_thread.start()
+
+    def _on_deepliif_progress(self, msg: str, current: int, total: int):
+        """DeepLIIF 推理进度更新。"""
+        self._status_label.setText(msg)
+        self._progress_bar.setMaximum(total)
+        self._progress_bar.setValue(current)
+
+    def _deepliif_cleanup(self):
+        """线程结束后清理 worker 和 thread。"""
+        thread = getattr(self, '_deepliif_thread', None)
+        worker = getattr(self, '_deepliif_worker', None)
+        if thread is not None:
+            thread.quit()
+            thread.wait(3000)
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+        self._deepliif_thread = None
+        self._deepliif_worker = None
+
+    def _on_deepliif_finished(self, results: list):
+        """DeepLIIF 推理完成。"""
+        self._deepliif_btn.setEnabled(True)
+        self._progress_bar.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        self._cancel_op = None  # 清除取消委托
+
+        if not results:
+            self._status_label.setText("DeepLIIF 分析: 无结果")
+            QMessageBox.information(self, "提示", "分析未产生结果，请检查输入")
+            return
+
+        self._status_label.setText(f"DeepLIIF 分析完成: {len(results)} 个 ROI")
+        self._deepliif_results = results
+
+        # 打开结果查看器
+        tile_size = results[0].get("tile_size", 512) if results else 512
+        dlg = DeepLIIFResultsDialog(results, tile_size=tile_size, parent=self)
+        dlg.overlay_requested.connect(self._apply_overlay_to_canvas)
+        dlg.exec()
+
+    def _on_deepliif_error(self, msg: str):
+        """DeepLIIF 推理错误。"""
+        self._deepliif_btn.setEnabled(True)
+        self._progress_bar.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        self._cancel_op = None
+        self._status_label.setText("DeepLIIF 分析出错")
+        QMessageBox.warning(self, "DeepLIIF 错误", msg)
+
+    def _apply_overlay_to_canvas(self, roi_id: str, qimage: QImage,
+                                  x: int, y: int, w: int, h: int,
+                                  opacity: float) -> None:
+        """将分割结果叠加到画布上。"""
+        self._canvas.set_overlay_opacity(opacity)
+        self._canvas.add_overlay(roi_id, qimage, x, y, w, h)
+        self._clear_overlay_btn.setVisible(True)
+        self._status_label.setText(f"已叠加 ROI {roi_id[:8]} 的分割结果到画布")
+
+    def _clear_analysis_overlay(self) -> None:
+        """清除画布上的分析叠加。"""
+        self._canvas.clear_overlays()
+        self._clear_overlay_btn.setVisible(False)
+        self._status_label.setText("已清除分析叠加")
+
+    def _set_deepliif_model_dir(self) -> None:
+        """设置 DeepLIIF 模型目录。"""
+        current = str(get_default_model_dir())
+        d = QFileDialog.getExistingDirectory(
+            self, "选择 DeepLIIF 模型目录", current,
+        )
+        if d:
+            ok, msg = check_model_available(d)
+            if ok:
+                QMessageBox.information(self, "模型就绪", msg)
+            else:
+                reply = QMessageBox.question(
+                    self, "模型未就绪",
+                    f"{msg}\n\n是否立即下载模型？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._download_deepliif_model(d)
+
+    def _download_deepliif_model(self, model_dir: str) -> None:
+        """在 QThread 中下载 DeepLIIF 模型。"""
+        from liver_portal_crop.deepliif_runner import ModelDownloadWorker
+        from PySide6.QtWidgets import QProgressDialog
+
+        # 进度对话框
+        self._dl_progress = QProgressDialog("正在准备下载...", "取消", 0, 0, self)
+        self._dl_progress.setWindowTitle("下载 DeepLIIF 模型")
+        self._dl_progress.setMinimumDuration(0)
+        self._dl_progress.setAutoClose(False)
+        self._dl_progress.setAutoReset(False)
+        self._dl_progress.setCancelButton(None)
+        self._dl_progress.show()
+
+        # Worker + Thread
+        self._dl_worker = ModelDownloadWorker(model_dir)
+        self._dl_thread = QThread()
+        self._dl_worker.moveToThread(self._dl_thread)
+
+        self._dl_thread.started.connect(self._dl_worker.run)
+        self._dl_worker.progress.connect(self._on_dl_progress)
+        self._dl_worker.status.connect(
+            lambda msg: self._dl_progress.setLabelText(msg)
+        )
+        self._dl_worker.finished.connect(self._on_dl_finished_app)
+        self._dl_worker.finished.connect(self._dl_thread.quit)
+        self._dl_worker.finished.connect(self._dl_worker.deleteLater)
+        self._dl_thread.finished.connect(self._dl_thread.deleteLater)
+
+        self._dl_thread.start()
+
+    def _on_dl_progress(self, pct: int, dl_mb: int, total_mb: int):
+        """更新下载进度。"""
+        if total_mb <= 0:
+            return
+        if self._dl_progress.maximum() == 0:
+            self._dl_progress.setMaximum(100)
+            cancel_btn = QPushButton("取消")
+            self._dl_progress.setCancelButton(cancel_btn)
+            self._dl_progress.canceled.connect(self._dl_worker.cancel)
+        self._dl_progress.setValue(pct)
+        self._dl_progress.setLabelText(
+            f"正在下载... {dl_mb} / {total_mb} MB  ({pct}%)"
+        )
+
+    def _on_dl_finished_app(self, ok: bool, msg: str):
+        """下载完成（菜单触发）。"""
+        self._dl_progress.close()
+        if ok:
+            QMessageBox.information(self, "下载完成", msg)
+        elif "取消" not in msg:
+            QMessageBox.warning(self, "下载失败", msg)
 
     def _cleanup_stale_rois(self) -> None:
         active = set(self._readers.keys())
