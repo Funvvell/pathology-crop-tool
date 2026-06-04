@@ -182,7 +182,22 @@ class ROIRectItem(QGraphicsRectItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            # 拖拽其他 ROI 时，阻止 scene 自动改变非目标 item 的选中
+            scene = self.scene()
+            if scene and scene.views():
+                view = scene.views()[0]
+                if getattr(view, '_drag_guard_active', False) and \
+                   self in getattr(view, '_drag_guard_items', set()):
+                    return True  # 保持当前选中状态不变
             self.set_selected_appearance(bool(value))
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            # 拖拽其他 ROI 时，阻止 scene 移动非目标 item
+            scene = self.scene()
+            if scene and scene.views():
+                view = scene.views()[0]
+                if getattr(view, '_drag_guard_active', False) and \
+                   self in getattr(view, '_drag_guard_items', set()):
+                    return self.pos()  # 拒绝位置变更，返回原位置
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged \
            and not self._block_sync:
             self._update_handle_positions()
@@ -233,6 +248,8 @@ class WSICanvas(QGraphicsView):
         # ROI
         self._roi_items: dict[str, ROIRectItem] = {}
         self._roi_mode = False
+        self._drag_guard_items: set[ROIRectItem] = set()
+        self._drag_guard_active: bool = False
 
         # 浮动框
         self._frame_w: int = 1024
@@ -552,6 +569,13 @@ class WSICanvas(QGraphicsView):
             if not clicked.isSelected():
                 self._scene.clearSelection()
                 clicked.setSelected(True)
+            # 临时移除其他 ROI 的 ItemIsSelectable，阻止 scene 自动选中
+            # 保持禁用直到 mouseReleaseEvent，防止拖拽期间 scene 重新选中
+            self._drag_others = [i for i in self._roi_items.values() if i is not clicked]
+            self._drag_guard_items = set(self._drag_others)
+            self._drag_guard_active = True
+            for item in self._drag_others:
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
             self._drag_roi_mode = self.dragMode()
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             super().mousePressEvent(event)
@@ -560,6 +584,14 @@ class WSICanvas(QGraphicsView):
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
+        # 恢复其他 ROI 的 ItemIsSelectable
+        if getattr(self, '_drag_others', None):
+            for item in self._drag_others:
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+                item.set_selected_appearance(False)
+            self._drag_others = None
+        self._drag_guard_active = False
+        self._drag_guard_items = set()
         if self._drag_roi_mode is not None:
             self.setDragMode(self._drag_roi_mode)
             self._drag_roi_mode = None
