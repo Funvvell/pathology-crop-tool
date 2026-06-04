@@ -197,11 +197,18 @@ class _ROICard(QWidget):
 class DeepLIIFAnalysisDialog(QDialog):
     """DeepLIIF 分析配置对话框。"""
 
+    confirmed = Signal(dict, list)  # params, selected_rois
+
     def __init__(self, rois: list[ROIModel], readers: dict,
                  current_slide: Path | None = None,
                  magnification: str = "40x",
                  parent=None):
         super().__init__(parent)
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+        )
         self.setWindowTitle("DeepLIIF 分析")
         self.setMinimumSize(600, 650)
         self.resize(700, 700)
@@ -359,10 +366,10 @@ class DeepLIIFAnalysisDialog(QDialog):
 
         self._start_btn = QPushButton("🚀 开始分析")
         self._start_btn.setDefault(True)
-        self._start_btn.clicked.connect(self.accept)
+        self._start_btn.clicked.connect(self._on_confirm)
         self._start_btn.setMinimumHeight(32)
         cancel_btn = QPushButton("取消")
-        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.clicked.connect(self.close)
         cancel_btn.setMinimumHeight(32)
         btn_lay.addWidget(self._start_btn)
         btn_lay.addWidget(cancel_btn)
@@ -386,9 +393,10 @@ class DeepLIIFAnalysisDialog(QDialog):
             self._tile_size_cb.setEnabled(True)
         else:
             self._mode_info.setText(
-                "云端模式：ROI ≤ 2048px 直接推理；> 2048px 切成 2000px 大块并发处理后拼接"
+                "云端模式：ROI ≤ 2048px 直接推理；> 2048px 切成 2000px 大块并发处理后拼接\n"
+                "Tile Size 决定发送给 API 的分辨率倍率"
             )
-            self._tile_size_cb.setEnabled(False)
+            self._tile_size_cb.setEnabled(True)
 
     def _check_model_status(self, _=None):
         """检查当前模型路径的可用状态。"""
@@ -476,9 +484,9 @@ class DeepLIIFAnalysisDialog(QDialog):
             self._download_btn.setVisible(False)
         else:
             self._model_status_lbl.setText(msg)
+            color = "#94a3b8" if "取消" in msg else "#ef4444"
             self._model_status_lbl.setStyleSheet(
-                "color: #ef4444;" if "取消" not in msg else "color: #94a3b8;"
-                " font-size: 11px;"
+                f"color: {color}; font-size: 11px;"
             )
         self._check_model_status()
 
@@ -573,26 +581,18 @@ class DeepLIIFAnalysisDialog(QDialog):
         tile_text = self._tile_size_cb.currentText()
         tile_size = int(tile_text.split()[0])
 
-        # 在线程中运行推理
+        # 在线程中运行推理（非阻塞）
         self._patch_btn.setEnabled(False)
-        self._patch_btn.setText("推理中...")
-
-        from PySide6.QtWidgets import QProgressDialog
-        self._patch_progress = QProgressDialog("正在分析小块...", None, 0, 0, self)
-        self._patch_progress.setWindowTitle("小块测试")
-        self._patch_progress.setMinimumDuration(0)
-        self._patch_progress.show()
+        self._patch_btn.setText("⏳ 推理中...")
 
         from PySide6.QtCore import QThread
-        from liver_portal_crop.deepliif_runner import DeepLIIFWorker
         from liver_portal_crop.roi import ROIModel
 
-        # 构造一个临时 ROI 用于 worker
+        # 构造一个临时 ROI
         patch_roi = ROIModel(
             slide_path=roi.slide_path, x=roi.x, y=roi.y,
             w=roi.w, h=roi.h, id="patch_test",
         )
-        # 直接用 patch 图像，不走 reader 提取
         self._patch_images = {"IHC": patch}
         self._patch_mode = mode
         self._patch_model_dir = model_dir
@@ -638,18 +638,16 @@ class DeepLIIFAnalysisDialog(QDialog):
         self._patch_thread.start()
 
     def _on_patch_done(self, result: dict):
-        """小块推理完成，打开结果窗口。"""
-        self._patch_progress.close()
+        """小块推理完成，非模态打开结果窗口。"""
         self._patch_btn.setEnabled(True)
         self._patch_btn.setText("✂ 小块测试 (2000px)")
-        self._patch_btn.setEnabled(True)
 
         from liver_portal_crop.results_viewer import DeepLIIFResultsDialog
         dlg = DeepLIIFResultsDialog(
             [result], tile_size=self._patch_tile_size, parent=self,
         )
         dlg.setWindowTitle("小块测试 — 调好参数后关闭，再点「开始分析」批量处理")
-        dlg.exec()
+        dlg.show()  # 非模态，不阻塞
 
         # 用户关闭后，读取最终参数值并应用到滑块
         # (结果 dialog 中的 seg_thresh / size_thresh 滑块值)
@@ -657,7 +655,6 @@ class DeepLIIFAnalysisDialog(QDialog):
 
     def _on_patch_error(self, msg: str):
         """小块推理失败。"""
-        self._patch_progress.close()
         self._patch_btn.setEnabled(True)
         self._patch_btn.setText("✂ 小块测试 (2000px)")
         QMessageBox.warning(self, "推理失败", msg)
@@ -685,8 +682,26 @@ class DeepLIIFAnalysisDialog(QDialog):
         """返回用户选中的 ROI 列表。"""
         return [roi for roi in self._rois if self._cards[roi.id].checked]
 
+    def _on_confirm(self):
+        """开始分析 — 发射信号并关闭对话框。"""
+        params = self.get_params()
+        selected = self.get_selected_rois()
+        if not selected:
+            QMessageBox.information(self, "提示", "请先选择至少一个 ROI")
+            return
+        self.confirmed.emit(params, selected)
+        self.close()
+
     def closeEvent(self, event):
         if self._thumb_worker and self._thumb_worker.isRunning():
             self._thumb_worker.cancel()
-            self._thumb_worker.wait(2000)
+            self._thumb_worker.wait(3000)
+        if hasattr(self, '_patch_thread') and self._patch_thread and self._patch_thread.isRunning():
+            self._patch_thread.quit()
+            self._patch_thread.wait(3000)
+        if hasattr(self, '_dl_thread') and self._dl_thread and self._dl_thread.isRunning():
+            if hasattr(self, '_dl_worker') and self._dl_worker:
+                self._dl_worker.cancel()
+            self._dl_thread.quit()
+            self._dl_thread.wait(3000)
         super().closeEvent(event)

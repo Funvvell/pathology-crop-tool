@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QRectF, QThread
+from PySide6.QtCore import Qt, QRectF, QThread, QTimer
 from PySide6.QtWidgets import QDialog
 from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QMessageBox,
-    QProgressBar, QPushButton, QSpinBox, QSplitter,
+    QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -25,7 +25,7 @@ from liver_portal_crop.tissue_detect import (
 )
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
-from liver_portal_crop.preview_dialog import ROIPreviewDialog
+from liver_portal_crop.preview_dialog import ROIPreviewDialog, ROIPreviewPanel
 from liver_portal_crop.analysis_dialog import DeepLIIFAnalysisDialog
 from liver_portal_crop.results_viewer import DeepLIIFResultsDialog
 from liver_portal_crop.deepliif_runner import (
@@ -52,6 +52,11 @@ class MainWindow(QMainWindow):
         )
         self._current_slide: Path | None = None
         self._current_theme: str = "dark"
+        self._selected_roi_id: str | None = None
+        self._preview_refresh_timer = QTimer()
+        self._preview_refresh_timer.setSingleShot(True)
+        self._preview_refresh_timer.setInterval(500)
+        self._preview_refresh_timer.timeout.connect(self._do_preview_refresh)
 
         self._setup_ui()
         self._connect_signals()
@@ -66,11 +71,14 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── 顶部工具栏 ──
-        toolbar = QWidget()
-        toolbar.setObjectName("topToolbar")
-        toolbar.setFixedHeight(36)
-        tbar = QHBoxLayout(toolbar)
+        # ── 顶部工具栏（QStackedWidget：画布工具栏 / 预览工具栏）──
+        self._toolbar_stack = QStackedWidget()
+        self._toolbar_stack.setFixedHeight(36)
+
+        # --- 画布工具栏 (index 0) ---
+        canvas_tb = QWidget()
+        canvas_tb.setObjectName("topToolbar")
+        tbar = QHBoxLayout(canvas_tb)
         tbar.setContentsMargins(8, 0, 8, 0)
         tbar.setSpacing(4)
 
@@ -78,7 +86,6 @@ class MainWindow(QMainWindow):
         self._status_label.setObjectName("statusLabel")
         tbar.addWidget(self._status_label)
 
-        # 预设
         self._preset_cb = QComboBox()
         self._preset_cb.setObjectName("presetCb")
         self._preset_cb.setMinimumWidth(90)
@@ -131,7 +138,6 @@ class MainWindow(QMainWindow):
         self._frame_h_spin.valueChanged.connect(self._update_frame_size)
         tbar.addWidget(self._frame_h_spin)
 
-        # 进度条
         self._progress_bar = QProgressBar()
         self._progress_bar.setObjectName("exportProgress")
         self._progress_bar.setRange(0, 100)
@@ -144,7 +150,7 @@ class MainWindow(QMainWindow):
         self._cancel_btn = QPushButton("✕")
         self._cancel_btn.setFixedSize(22, 22)
         self._cancel_btn.setObjectName("cancelBtn")
-        self._cancel_op = None  # 取消委托：None=导出, callable=自定义
+        self._cancel_op = None
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
         self._cancel_btn.hide()
         tbar.addWidget(self._cancel_btn)
@@ -161,12 +167,83 @@ class MainWindow(QMainWindow):
         self._export_btn.clicked.connect(self._start_export)
         tbar.addWidget(self._export_btn)
 
-        self._preview_export_btn = QPushButton("预览导出")
-        self._preview_export_btn.setObjectName("previewExportBtn")
-        self._preview_export_btn.clicked.connect(self._show_preview_dialog)
-        tbar.addWidget(self._preview_export_btn)
+        self._preview_win_btn = QPushButton("👁 ROI 预览")
+        self._preview_win_btn.setToolTip("切换到 ROI 缩略图预览视图")
+        self._preview_win_btn.clicked.connect(self._toggle_preview_view)
+        tbar.addWidget(self._preview_win_btn)
 
-        main_layout.addWidget(toolbar)
+        self._toolbar_stack.addWidget(canvas_tb)  # index 0
+
+        # --- 预览工具栏 (index 1) ---
+        preview_tb = QWidget()
+        preview_tb.setObjectName("topToolbar")
+        ptbar = QHBoxLayout(preview_tb)
+        ptbar.setContentsMargins(8, 0, 8, 0)
+        ptbar.setSpacing(4)
+
+        self._preview_status_label = QLabel("ROI 预览")
+        self._preview_status_label.setObjectName("statusLabel")
+        ptbar.addWidget(self._preview_status_label)
+
+        ptbar.addSpacing(16)
+
+        self._preview_select_all_btn = QPushButton("全选")
+        self._preview_deselect_btn = QPushButton("全不选")
+        self._preview_invert_btn = QPushButton("反选")
+        ptbar.addWidget(self._preview_select_all_btn)
+        ptbar.addWidget(self._preview_deselect_btn)
+        ptbar.addWidget(self._preview_invert_btn)
+
+        ptbar.addSpacing(16)
+        ptbar.addWidget(QLabel("筛选:"))
+        self._preview_filter_cb = QComboBox()
+        self._preview_filter_cb.addItem("全部文件")
+        self._preview_filter_cb.setMinimumWidth(100)
+        ptbar.addWidget(self._preview_filter_cb)
+
+        ptbar.addStretch()
+
+        self._preview_count_label = QLabel("已选: 0/0")
+        ptbar.addWidget(self._preview_count_label)
+
+        self._preview_progress = QProgressBar()
+        self._preview_progress.setObjectName("exportProgress")
+        self._preview_progress.setRange(0, 100)
+        self._preview_progress.setValue(0)
+        self._preview_progress.setFixedWidth(160)
+        self._preview_progress.setFixedHeight(18)
+        self._preview_progress.hide()
+        ptbar.addWidget(self._preview_progress)
+
+        self._preview_cancel_btn = QPushButton("✕")
+        self._preview_cancel_btn.setFixedSize(22, 22)
+        self._preview_cancel_btn.setObjectName("cancelBtn")
+        self._preview_cancel_btn.clicked.connect(self._on_cancel_clicked)
+        self._preview_cancel_btn.hide()
+        ptbar.addWidget(self._preview_cancel_btn)
+
+        self._preview_settings_btn = QPushButton("输出目录")
+        self._preview_settings_btn.setObjectName("dirBtn")
+        self._preview_settings_btn.clicked.connect(self._show_settings)
+        ptbar.addWidget(self._preview_settings_btn)
+
+        self._preview_export_all_btn = QPushButton("批量导出")
+        self._preview_export_all_btn.setObjectName("exportBtn")
+        self._preview_export_all_btn.clicked.connect(self._preview_export_all)
+        ptbar.addWidget(self._preview_export_all_btn)
+
+        self._preview_export_sel_btn = QPushButton("导出选中")
+        self._preview_export_sel_btn.setObjectName("exportBtn")
+        self._preview_export_sel_btn.clicked.connect(self._preview_export_selected)
+        ptbar.addWidget(self._preview_export_sel_btn)
+
+        self._preview_back_btn = QPushButton("← 返回画布")
+        self._preview_back_btn.clicked.connect(self._toggle_preview_view)
+        ptbar.addWidget(self._preview_back_btn)
+
+        self._toolbar_stack.addWidget(preview_tb)  # index 1
+
+        main_layout.addWidget(self._toolbar_stack)
 
         # ── 分割线 ──
         sep = QWidget()
@@ -175,12 +252,12 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sep)
 
         # ── 内容区 ──
-        body = QSplitter(Qt.Orientation.Horizontal)
-        body.setHandleWidth(6)
+        self._body = QSplitter(Qt.Orientation.Horizontal)
+        self._body.setHandleWidth(6)
 
-        # 左侧：导航缩略图 + 文件列表
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        # 左侧：导航缩略图 + 文件列表（预览模式下隐藏）
+        self._left_panel = QWidget()
+        left_layout = QVBoxLayout(self._left_panel)
         left_layout.setContentsMargins(4, 4, 4, 4)
 
         self._nav = NavigationWidget()
@@ -196,11 +273,15 @@ class MainWindow(QMainWindow):
         self._remove_file_btn.clicked.connect(self._remove_selected_file)
         left_layout.addWidget(self._add_file_btn)
         left_layout.addWidget(self._remove_file_btn)
-        body.addWidget(left_panel)
+        self._body.addWidget(self._left_panel)
 
-        # 中央：WSI 画布
+        # 中央：QStackedWidget（画布 / 预览面板 切换）
         self._canvas = WSICanvas()
-        body.addWidget(self._canvas)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._canvas)  # index 0 = 画布
+        # 预览面板在首次切换时延迟创建
+        self._preview_panel: ROIPreviewPanel | None = None
+        self._body.addWidget(self._stack)
 
         # 右侧：ROI 列表
         right_panel = QWidget()
@@ -214,6 +295,7 @@ class MainWindow(QMainWindow):
         self._deepliif_btn = QPushButton("🔬 DeepLIIF 分析")
         self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
         self._deepliif_btn.clicked.connect(self._run_deepliif)
+        self._deepliif_btn.setVisible(False)
         right_layout.addWidget(self._deepliif_btn)
 
         self._clear_overlay_btn = QPushButton("清除分析叠加")
@@ -260,10 +342,10 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self._clear_current_btn)
         right_layout.addWidget(self._clear_all_btn)
 
-        body.addWidget(right_panel)
+        self._body.addWidget(right_panel)
 
-        body.setSizes([200, 700, 200])
-        main_layout.addWidget(body, 1)
+        self._body.setSizes([200, 700, 200])
+        main_layout.addWidget(self._body, 1)
 
     def _connect_signals(self) -> None:
         self._file_list.currentRowChanged.connect(self._on_file_selected)
@@ -542,6 +624,7 @@ class MainWindow(QMainWindow):
                 self._refresh_roi_list()
                 self._update_roi_spins()
                 break
+        self._notify_preview_rois_changed()
 
     def _on_roi_selection_changed(self, roi_id: str) -> None:
         """ROI 选中状态变化时更新工具栏和列表。"""
@@ -566,6 +649,10 @@ class MainWindow(QMainWindow):
             self._roi_list.blockSignals(True)
             self._roi_list.clearSelection()
             self._roi_list.blockSignals(False)
+
+        # 同步预览面板高亮
+        if self._preview_panel and roi_id:
+            self._preview_panel.on_roi_selected(roi_id)
 
     def _on_roi_list_selected(self, row: int) -> None:
         """右侧列表选中 ROI 时，画布同步选中。"""
@@ -613,10 +700,12 @@ class MainWindow(QMainWindow):
 
     def _on_roi_added(self, roi: ROIModel) -> None:
         self._refresh_roi_list()
+        self._notify_preview_rois_changed()
 
     def _on_roi_removed(self, roi_id: str) -> None:
         self._canvas.remove_roi_rect(roi_id)
         self._refresh_roi_list()
+        self._notify_preview_rois_changed()
 
     def _restore_roi_on_canvas(self) -> None:
         """切换文件后在画布上恢复当前文件的 ROI 矩形。"""
@@ -724,6 +813,90 @@ class MainWindow(QMainWindow):
         if selected_rois:
             self._run_export(selected_rois)
 
+    # ── 画布/预览面板切换 ─────────────────────────────
+
+    def _toggle_preview_view(self) -> None:
+        """切换中心区域：画布 ↔ 预览面板，同步切换工具栏和左侧面板。"""
+        if self._stack.currentIndex() == 1:
+            # 切回画布：保存预览模式的 splitter，恢复画布模式的
+            self._preview_splitter_sizes = self._body.sizes()
+            self._stack.setCurrentIndex(0)
+            self._toolbar_stack.setCurrentIndex(0)
+            self._left_panel.show()
+            self._tissue_btn.show()
+            self._deepliif_btn.hide()
+            self._clear_overlay_btn.hide()
+            if hasattr(self, '_canvas_splitter_sizes'):
+                self._body.setSizes(self._canvas_splitter_sizes)
+        else:
+            # 切到预览面板：保存画布模式的 splitter，恢复预览模式的
+            self._canvas_splitter_sizes = self._body.sizes()
+            if self._preview_panel is None:
+                self._cleanup_stale_rois()
+                all_rois = self._roi_manager.all_rois()
+                self._preview_panel = ROIPreviewPanel(
+                    all_rois, self._readers,
+                    toolbar_buttons=(
+                        self._preview_select_all_btn,
+                        self._preview_deselect_btn,
+                        self._preview_invert_btn,
+                    ),
+                    filter_cb=self._preview_filter_cb,
+                    count_label=self._preview_count_label,
+                )
+                self._preview_panel.roi_selected.connect(self._on_preview_roi_selected)
+                self._stack.addWidget(self._preview_panel)
+            self._stack.setCurrentIndex(1)
+            self._toolbar_stack.setCurrentIndex(1)
+            self._left_panel.hide()
+            self._tissue_btn.hide()
+            self._deepliif_btn.show()
+            if hasattr(self, '_preview_splitter_sizes'):
+                self._body.setSizes(self._preview_splitter_sizes)
+            # 同步当前选中
+            if self._selected_roi_id:
+                self._preview_panel.on_roi_selected(self._selected_roi_id)
+
+    def _on_preview_roi_selected(self, roi_id: str) -> None:
+        """预览面板选中 ROI → 同步到画布和列表。"""
+        self._canvas.select_roi(roi_id)
+
+    def _preview_export_all(self) -> None:
+        """预览模式：批量导出当前文件的所有 ROI。"""
+        self._cleanup_stale_rois()
+        if self._current_slide:
+            rois = self._roi_manager.get_slide_rois(self._current_slide)
+        else:
+            rois = self._roi_manager.all_rois()
+        if not rois:
+            QMessageBox.information(self, "提示", "没有可导出的 ROI")
+            return
+        self._run_export(rois)
+
+    def _preview_export_selected(self) -> None:
+        """预览模式：导出预览面板中勾选的 ROI。"""
+        if not self._preview_panel:
+            return
+        selected_ids = set(self._preview_panel.get_selected_ids())
+        if not selected_ids:
+            QMessageBox.information(self, "提示", "请先勾选要导出的 ROI")
+            return
+        all_rois = self._roi_manager.all_rois()
+        selected_rois = [r for r in all_rois if r.id in selected_ids]
+        self._run_export(selected_rois)
+
+    def _notify_preview_rois_changed(self) -> None:
+        """通知预览面板刷新 ROI 缩略图（防抖）。"""
+        if self._preview_panel:
+            self._preview_refresh_timer.start()
+
+    def _do_preview_refresh(self) -> None:
+        """实际执行预览面板刷新。"""
+        if self._preview_panel:
+            self._preview_panel.on_rois_changed(
+                self._roi_manager.all_rois(), self._readers
+            )
+
     def _run_export(self, rois: list) -> None:
         """执行批量导出（共用逻辑）。"""
         # 清理上次导出线程
@@ -739,14 +912,11 @@ class MainWindow(QMainWindow):
         self._crop_config.crop_height = crop_h
         self._crop_config.mag_label = self._mag_cb.currentText().rstrip("xX")
 
-        # 显示进度条
-        self._progress_bar.setRange(0, len(rois))
-        self._progress_bar.setValue(0)
-        self._progress_bar.setFormat(f"0/{len(rois)}")
-        self._progress_bar.show()
-        self._cancel_btn.show()
+        # 显示进度条（在当前激活的工具栏上）
+        self._show_export_progress(len(rois))
         self._export_btn.setEnabled(False)
-        self._preview_export_btn.setEnabled(False)
+        self._preview_export_all_btn.setEnabled(False)
+        self._preview_export_sel_btn.setEnabled(False)
 
         # 传路径字典给线程
         path_input: dict[Path, str | SDPCReader] = {}
@@ -762,15 +932,41 @@ class MainWindow(QMainWindow):
             lambda: self._exporter.run(rois, path_input),
             Qt.DirectConnection,
         )
-        self._exporter.progress.connect(lambda v, t: (
-            self._progress_bar.setValue(v),
-            self._progress_bar.setFormat(f"{v}/{t}"),
-        ))
+        self._exporter.progress.connect(lambda v, t: self._update_export_progress(v, t))
         self._exporter.file_done.connect(self._on_export_file_done)
         self._exporter.finished.connect(self._on_export_finished)
         self._exporter.finished.connect(self._export_thread.quit)
 
         self._export_thread.start()
+
+    def _show_export_progress(self, total: int) -> None:
+        """在当前激活的工具栏上显示进度条，并记录导出发起的工具栏。"""
+        self._export_toolbar_index = self._stack.currentIndex()
+        if self._export_toolbar_index == 0:
+            bar, cancel = self._progress_bar, self._cancel_btn
+        else:
+            bar, cancel = self._preview_progress, self._preview_cancel_btn
+        bar.setRange(0, total)
+        bar.setValue(0)
+        bar.setFormat(f"0/{total}")
+        bar.show()
+        cancel.show()
+
+    def _update_export_progress(self, current: int, total: int) -> None:
+        """更新导出发起时的工具栏进度条（不随视图切换改变）。"""
+        if getattr(self, '_export_toolbar_index', 0) == 0:
+            bar = self._progress_bar
+        else:
+            bar = self._preview_progress
+        bar.setValue(current)
+        bar.setFormat(f"{current}/{total}")
+
+    def _hide_export_progress(self) -> None:
+        """隐藏两个工具栏的进度条。"""
+        self._progress_bar.hide()
+        self._cancel_btn.hide()
+        self._preview_progress.hide()
+        self._preview_cancel_btn.hide()
 
     def _on_export_file_done(self, path: str, status: str) -> None:
         if status != "ok":
@@ -788,10 +984,10 @@ class MainWindow(QMainWindow):
             self._cancel_export()
 
     def _on_export_finished(self) -> None:
-        self._progress_bar.hide()
-        self._cancel_btn.hide()
+        self._hide_export_progress()
         self._export_btn.setEnabled(True)
-        self._preview_export_btn.setEnabled(True)
+        self._preview_export_all_btn.setEnabled(True)
+        self._preview_export_sel_btn.setEnabled(True)
         self._status_label.setText("导出完成")
         QMessageBox.information(
             self, "导出完成",
@@ -946,13 +1142,13 @@ class MainWindow(QMainWindow):
             magnification=mag_text,
             parent=self,
         )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+        dlg.confirmed.connect(self._on_deepliif_confirmed)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
 
-        params = dlg.get_params()
-        selected_rois = dlg.get_selected_rois()
+    def _on_deepliif_confirmed(self, params: dict, selected_rois: list):
+        """分析对话框确认 — 启动后台推理。"""
         if not selected_rois:
-            QMessageBox.information(self, "提示", "未选择任何 ROI")
             return
 
         # 确定推理模式
@@ -970,12 +1166,13 @@ class MainWindow(QMainWindow):
             mode = DeepLIIFMode.CLOUD
             model_dir = None
 
-        # 显示进度
-        self._deepliif_btn.setEnabled(False)
-        self._progress_bar.setVisible(True)
-        self._cancel_btn.setVisible(True)
-        self._progress_bar.setMaximum(len(selected_rois))
-        self._progress_bar.setValue(0)
+        # 显示进度（在预览工具栏上，因为 DeepLIIF 只在预览模式可用）
+        self._preview_progress.setRange(0, len(selected_rois))
+        self._preview_progress.setValue(0)
+        self._preview_progress.setFormat(f"0/{len(selected_rois)}")
+        self._preview_progress.show()
+        self._preview_cancel_btn.show()
+        self._deepliif_btn.setText("⏳ 分析中...")
         self._status_label.setText("DeepLIIF 分析中...")
 
         # 创建 Worker 和线程（不能有 parent，否则无法 moveToThread）
@@ -1006,8 +1203,9 @@ class MainWindow(QMainWindow):
     def _on_deepliif_progress(self, msg: str, current: int, total: int):
         """DeepLIIF 推理进度更新。"""
         self._status_label.setText(msg)
-        self._progress_bar.setMaximum(total)
-        self._progress_bar.setValue(current)
+        self._preview_progress.setMaximum(total)
+        self._preview_progress.setValue(current)
+        self._deepliif_btn.setText(f"⏳ {current}/{total}")
 
     def _deepliif_cleanup(self):
         """线程结束后清理 worker 和 thread。"""
@@ -1024,31 +1222,40 @@ class MainWindow(QMainWindow):
         self._deepliif_worker = None
 
     def _on_deepliif_finished(self, results: list):
-        """DeepLIIF 推理完成。"""
+        """DeepLIIF 推理完成 — 非模态打开结果窗口，不阻塞主程序。"""
         self._deepliif_btn.setEnabled(True)
-        self._progress_bar.setVisible(False)
-        self._cancel_btn.setVisible(False)
-        self._cancel_op = None  # 清除取消委托
+        self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+        self._preview_progress.hide()
+        self._preview_cancel_btn.hide()
+        self._cancel_op = None
 
         if not results:
             self._status_label.setText("DeepLIIF 分析: 无结果")
-            QMessageBox.information(self, "提示", "分析未产生结果，请检查输入")
             return
 
         self._status_label.setText(f"DeepLIIF 分析完成: {len(results)} 个 ROI")
         self._deepliif_results = results
 
-        # 打开结果查看器
+        # 非模态打开结果查看器，不阻塞主窗口
         tile_size = results[0].get("tile_size", 512) if results else 512
         dlg = DeepLIIFResultsDialog(results, tile_size=tile_size, parent=self)
         dlg.overlay_requested.connect(self._apply_overlay_to_canvas)
-        dlg.exec()
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
+        # 保存引用防止被 GC 回收
+        self._deepliif_result_dialogs = getattr(self, '_deepliif_result_dialogs', [])
+        self._deepliif_result_dialogs.append(dlg)
+        dlg.destroyed.connect(
+            lambda: self._deepliif_result_dialogs.remove(dlg)
+            if dlg in self._deepliif_result_dialogs else None
+        )
 
     def _on_deepliif_error(self, msg: str):
         """DeepLIIF 推理错误。"""
         self._deepliif_btn.setEnabled(True)
-        self._progress_bar.setVisible(False)
-        self._cancel_btn.setVisible(False)
+        self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+        self._preview_progress.hide()
+        self._preview_cancel_btn.hide()
         self._cancel_op = None
         self._status_label.setText("DeepLIIF 分析出错")
         QMessageBox.warning(self, "DeepLIIF 错误", msg)
