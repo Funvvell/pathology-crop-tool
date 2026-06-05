@@ -12,7 +12,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from PySide6.QtCore import Qt, QRectF, QTimer, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QImage, QPainter, QPen, QPixmap,
 )
@@ -22,6 +22,63 @@ from PySide6.QtWidgets import (
 )
 
 from liver_portal_crop.reader import SDPCReader
+
+
+class RotateHandle(QGraphicsEllipseItem):
+    """ROI 旋转手柄（圆环，拖拽旋转）。
+
+    放在矩形顶部中央上方，拖拽时绕矩形中心旋转。
+    """
+
+    HANDLE_SIZE = 12
+    OFFSET = 20  # 距离顶边的偏移像素
+
+    def __init__(self, parent_roi: QGraphicsRectItem):
+        hs = self.HANDLE_SIZE
+        super().__init__(-hs // 2, -hs // 2, hs, hs, parent_roi)
+        self._parent_roi = parent_roi
+        self.setAcceptHoverEvents(True)
+        self.setBrush(QBrush(QColor(255, 165, 0)))  # 橙色
+        self.setPen(QPen(QColor(200, 100, 0), 2))
+        self.setZValue(2)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self._drag_start_angle: float | None = None
+
+    def _get_center_scene(self) -> QPointF:
+        """获取父 ROI 中心的场景坐标。"""
+        r = self._parent_roi.rect()
+        center_local = QPointF(r.left() + r.width() / 2,
+                                r.top() + r.height() / 2)
+        return self._parent_roi.mapToScene(center_local)
+
+    def mousePressEvent(self, event):
+        center = self._get_center_scene()
+        pos = event.scenePos()
+        self._drag_start_angle = math.atan2(pos.y() - center.y(),
+                                             pos.x() - center.x())
+        self._drag_start_rotation = self._parent_roi.rotation()
+        self._parent_roi.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start_angle is None:
+            return
+        center = self._get_center_scene()
+        pos = event.scenePos()
+        current_angle = math.atan2(pos.y() - center.y(),
+                                    pos.x() - center.x())
+        delta_deg = math.degrees(current_angle - self._drag_start_angle)
+        new_rotation = (self._drag_start_rotation + delta_deg) % 360
+        self._parent_roi.setRotation(new_rotation)
+        self._parent_roi._update_handle_positions()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start_angle is not None:
+            self._drag_start_angle = None
+            self._parent_roi.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            self._parent_roi._emit_changed()
+        event.accept()
 
 
 class ResizeHandle(QGraphicsEllipseItem):
@@ -101,17 +158,19 @@ class ResizeHandle(QGraphicsEllipseItem):
         if hasattr(self._parent_roi, '_update_handle_positions'):
             self._parent_roi._update_handle_positions()
 
+
 class ROIRectItem(QGraphicsRectItem):
-    """可缩放/可移动的 ROI 矩形。
+    """可缩放/可移动/可旋转的 ROI 矩形。
 
     注意：QGraphicsRectItem 不是 QObject，不能使用 Signal。
     通过 on_rect_changed 回调通知父项。
     """
 
-    def __init__(self, roi_id: str, rect: QRectF, on_changed=None, *args, **kwargs):
+    def __init__(self, roi_id: str, rect: QRectF, angle: float = 0.0,
+                 on_changed=None, *args, **kwargs):
         super().__init__(rect, *args, **kwargs)
         self._roi_id = roi_id
-        self._on_changed = on_changed  # callback: (roi_id, QRectF) -> None
+        self._on_changed = on_changed  # callback: (roi_id, QRectF, float) -> None
         self.setAcceptHoverEvents(True)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
@@ -122,6 +181,11 @@ class ROIRectItem(QGraphicsRectItem):
         self.setBrush(QBrush(QColor(0, 120, 215, 30)))
         self._hover_pen = QPen(QColor(255, 0, 0), 3)
         self._block_sync = False
+        # 旋转：以矩形中心为原点
+        r = rect
+        self.setTransformOriginPoint(r.left() + r.width() / 2,
+                                      r.top() + r.height() / 2)
+        self.setRotation(angle)
         self._create_handles()
 
     def _create_handles(self):
@@ -132,6 +196,8 @@ class ROIRectItem(QGraphicsRectItem):
         ]
         for px, py in positions:
             ResizeHandle(self, px, py)
+        # 旋转手柄
+        self._rotate_handle = RotateHandle(self)
         self._update_handle_positions()
         # 初始未选中，手柄隐藏
         for child in self.childItems():
@@ -145,12 +211,18 @@ class ROIRectItem(QGraphicsRectItem):
                 x = r.left() + child._pos_x * r.width()
                 y = r.top() + child._pos_y * r.height()
                 child.setPos(x, y)
+            elif isinstance(child, RotateHandle):
+                # 放在顶部中央上方
+                cx = r.left() + r.width() / 2
+                child.setPos(cx, r.top() - child.OFFSET)
 
     def _emit_changed(self):
-        """通知父项 ROI 变更（场景坐标）。"""
+        """通知父项 ROI 变更（场景坐标 + 旋转角度）。"""
         if self._block_sync or self._on_changed is None:
             return
-        self._on_changed(self._roi_id, self.mapRectToScene(self.rect()))
+        self._on_changed(self._roi_id,
+                         self.mapRectToScene(self.rect()),
+                         self.rotation())
 
     @property
     def roi_id(self) -> str:
@@ -160,6 +232,9 @@ class ROIRectItem(QGraphicsRectItem):
         """设置矩形但不触发回调（用于初始化/恢复）。"""
         self._block_sync = True
         self.setRect(rect)
+        # 更新旋转原点
+        self.setTransformOriginPoint(rect.left() + rect.width() / 2,
+                                      rect.top() + rect.height() / 2)
         self._block_sync = False
 
     def set_selected_appearance(self, selected: bool):
@@ -182,28 +257,26 @@ class ROIRectItem(QGraphicsRectItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
-            # 拖拽其他 ROI 时，阻止 scene 自动改变非目标 item 的选中
             scene = self.scene()
             if scene and scene.views():
                 view = scene.views()[0]
                 if getattr(view, '_drag_guard_active', False) and \
                    self in getattr(view, '_drag_guard_items', set()):
-                    return True  # 保持当前选中状态不变
+                    return True
             self.set_selected_appearance(bool(value))
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
-            # 拖拽其他 ROI 时，阻止 scene 移动非目标 item
             scene = self.scene()
             if scene and scene.views():
                 view = scene.views()[0]
                 if getattr(view, '_drag_guard_active', False) and \
                    self in getattr(view, '_drag_guard_items', set()):
-                    return self.pos()  # 拒绝位置变更，返回原位置
+                    return self.pos()
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged \
            and not self._block_sync:
             self._update_handle_positions()
             if hasattr(value, 'x') and self._on_changed:
                 r = self.mapRectToScene(self.rect())
-                self._on_changed(self._roi_id, r)
+                self._on_changed(self._roi_id, r, self.rotation())
         return super().itemChange(change, value)
 
 
@@ -214,11 +287,12 @@ class WSICanvas(QGraphicsView):
     根据缩放级别自动选择金字塔层级，按需加载可见区域。
     """
 
-    roi_created = Signal(str, QRectF)   # roi_id, rect in level-0 coords
+    roi_created = Signal(str, QRectF, float)   # roi_id, rect, angle
     roi_selected = Signal(str)
-    roi_rect_changed = Signal(str, QRectF)  # roi_id, new_rect
-    roi_selection_changed = Signal(str)     # roi_id (or empty if none selected)
-    viewport_changed = Signal(QRectF)    # visible rect in level-0 coords
+    roi_rect_changed = Signal(str, QRectF, float)  # roi_id, new_rect, angle
+    roi_selection_changed = Signal(str)
+    viewport_changed = Signal(QRectF)
+    frame_angle_changed = Signal(float)  # 浮选框角度被右键拖拽改变
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -256,6 +330,10 @@ class WSICanvas(QGraphicsView):
         self._frame_h: int = 1024
         self._frame_item: QGraphicsRectItem | None = None
         self._frame_visible: bool = False
+        self._frame_angle: float = 0.0
+        self._frame_angle_dragging: bool = False
+        self._frame_angle_start_mouse: float = 0.0
+        self._frame_angle_start_value: float = 0.0
         self._drag_roi_mode: QGraphicsView.DragMode | None = None
 
         self._scene.selectionChanged.connect(self._on_scene_selection_changed)
@@ -275,6 +353,7 @@ class WSICanvas(QGraphicsView):
         self._frame_item = None
         self._tile_cache.clear()
         self._tile_items.clear()
+        self._frame_angle = 0.0
 
         w, h = reader.full_width, reader.full_height
         self._scene.setSceneRect(0, 0, w, h)
@@ -322,6 +401,16 @@ class WSICanvas(QGraphicsView):
         self._frame_h = h
         if self._frame_item:
             self._frame_item.setRect(0, 0, w, h)
+            self._frame_item.setTransformOriginPoint(w / 2, h / 2)
+
+    def set_frame_angle(self, angle: float) -> None:
+        """设置浮动框旋转角度。"""
+        self._frame_angle = angle % 360
+        if self._frame_item:
+            self._frame_item.setRotation(self._frame_angle)
+
+    def get_frame_angle(self) -> float:
+        return self._frame_angle
 
     def set_roi_mode(self, active: bool) -> None:
         self._roi_mode = active
@@ -334,13 +423,15 @@ class WSICanvas(QGraphicsView):
             self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             self._hide_frame()
 
-    def add_roi_rect(self, roi_id: str, rect: QRectF) -> None:
-        item = ROIRectItem(roi_id, rect, on_changed=self._on_roi_rect_changed)
+    def add_roi_rect(self, roi_id: str, rect: QRectF, angle: float = 0.0) -> None:
+        item = ROIRectItem(roi_id, rect, angle=angle,
+                           on_changed=self._on_roi_rect_changed)
         self._scene.addItem(item)
         self._roi_items[roi_id] = item
 
-    def _on_roi_rect_changed(self, roi_id: str, new_rect: QRectF) -> None:
-        self.roi_rect_changed.emit(roi_id, new_rect)
+    def _on_roi_rect_changed(self, roi_id: str, new_rect: QRectF,
+                              angle: float) -> None:
+        self.roi_rect_changed.emit(roi_id, new_rect, angle)
 
     def update_roi_rect(self, roi_id: str, rect: QRectF) -> None:
         """更新指定 ROI 的矩形（不触发回调）。"""
@@ -380,6 +471,9 @@ class WSICanvas(QGraphicsView):
             self._frame_item.setPen(pen)
             self._frame_item.setBrush(QBrush(QColor(0, 255, 0, 12)))
             self._frame_item.setZValue(1000)
+            self._frame_item.setTransformOriginPoint(
+                self._frame_w / 2, self._frame_h / 2)
+            self._frame_item.setRotation(self._frame_angle)
             self._scene.addItem(self._frame_item)
         # 初始位置：鼠标当前位置
         cursor_pos = self.mapFromGlobal(self.cursor().pos())
@@ -411,8 +505,8 @@ class WSICanvas(QGraphicsView):
         if not self._scene.sceneRect().intersects(rect):
             return
         roi_id = uuid.uuid4().hex[:12]
-        self.add_roi_rect(roi_id, rect)
-        self.roi_created.emit(roi_id, rect)
+        self.add_roi_rect(roi_id, rect, angle=self._frame_angle)
+        self.roi_created.emit(roi_id, rect, self._frame_angle)
 
     # ── 金字塔 Tile 渲染 ─────────────────────────────
 
@@ -554,6 +648,22 @@ class WSICanvas(QGraphicsView):
         self._render_timer.start(200)
 
     def mouseMoveEvent(self, event):
+        # 右键拖拽旋转浮选框
+        if self._frame_angle_dragging and self._frame_item:
+            scene_pos = self.mapToScene(event.pos())
+            center = self._frame_item.mapToScene(
+                self._frame_w / 2, self._frame_h / 2
+            )
+            current = math.degrees(math.atan2(
+                scene_pos.y() - center.y(),
+                scene_pos.x() - center.x(),
+            ))
+            delta = current - self._frame_angle_start_mouse
+            new_angle = (self._frame_angle_start_value + delta) % 360
+            self._frame_angle = new_angle
+            self._frame_item.setRotation(new_angle)
+            self.frame_angle_changed.emit(new_angle)
+            return
         # 无论是否 ROI 模式，都在 super 之前更新浮动框位置
         # 这样左键拖拽平移时浮动框也跟着动
         if self._roi_mode and self._frame_visible:
@@ -561,17 +671,41 @@ class WSICanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
+        # 右键拖拽旋转浮选框（ROI 模式下）
+        if (event.button() == Qt.MouseButton.RightButton
+                and self._roi_mode and self._frame_visible and self._frame_item):
+            scene_pos = self.mapToScene(event.pos())
+            center = self._frame_item.mapToScene(
+                self._frame_w / 2, self._frame_h / 2
+            )
+            self._frame_angle_start_mouse = math.degrees(math.atan2(
+                scene_pos.y() - center.y(),
+                scene_pos.x() - center.x(),
+            ))
+            self._frame_angle_start_value = self._frame_angle
+            self._frame_angle_dragging = True
+            event.accept()
+            return
         clicked = self.itemAt(event.pos())
         if isinstance(clicked, ResizeHandle):
             super().mousePressEvent(event)
             return
-        if clicked is not None and isinstance(clicked, ROIRectItem):
-            if not clicked.isSelected():
-                self._scene.clearSelection()
-                clicked.setSelected(True)
-            # 临时移除其他 ROI 的 ItemIsSelectable，阻止 scene 自动选中
-            # 保持禁用直到 mouseReleaseEvent，防止拖拽期间 scene 重新选中
-            self._drag_others = [i for i in self._roi_items.values() if i is not clicked]
+        if isinstance(clicked, RotateHandle):
+            super().mousePressEvent(event)
+            return
+        # Walk up parent chain: itemAt may return a child item (handle)
+        # instead of the ROIRectItem itself.
+        target = clicked
+        while target is not None and not isinstance(target, ROIRectItem):
+            target = target.parentItem()
+        if target is not None and isinstance(target, ROIRectItem):
+            # Block scene's selectionChanged so super().mousePressEvent
+            # can't auto-select a different ROI during the drag setup.
+            self._scene.blockSignals(True)
+            self._scene.clearSelection()
+            target.setSelected(True)
+            # Guard: prevent other ROIs from being selected/moved during drag
+            self._drag_others = [i for i in self._roi_items.values() if i is not target]
             self._drag_guard_items = set(self._drag_others)
             self._drag_guard_active = True
             for item in self._drag_others:
@@ -579,10 +713,16 @@ class WSICanvas(QGraphicsView):
             self._drag_roi_mode = self.dragMode()
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             super().mousePressEvent(event)
+            self._scene.blockSignals(False)
             return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # 右键拖拽旋转结束
+        if self._frame_angle_dragging:
+            self._frame_angle_dragging = False
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
         # 恢复其他 ROI 的 ItemIsSelectable
         if getattr(self, '_drag_others', None):

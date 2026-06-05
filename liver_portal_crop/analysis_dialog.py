@@ -197,7 +197,8 @@ class _ROICard(QWidget):
 class DeepLIIFAnalysisDialog(QDialog):
     """DeepLIIF 分析配置对话框。"""
 
-    confirmed = Signal(dict, list)  # params, selected_rois
+    confirmed = Signal()  # 无参数；params/selected_rois 通过实例属性传递
+    patch_confirmed = Signal()  # 无参数；patch_data 通过实例属性传递
 
     def __init__(self, rois: list[ROIModel], readers: dict,
                  current_slide: Path | None = None,
@@ -543,7 +544,7 @@ class DeepLIIFAnalysisDialog(QDialog):
     # ── 小块测试 ──
 
     def _export_test_patch(self):
-        """裁剪小块 → 直接推理 → 打开结果窗口调参。"""
+        """裁剪小块 → 准备数据 → 发射信号通知主窗口执行推理。"""
         selected = self.get_selected_rois()
         if not selected:
             QMessageBox.information(self, "提示", "请先选择至少一个 ROI")
@@ -581,83 +582,23 @@ class DeepLIIFAnalysisDialog(QDialog):
         tile_text = self._tile_size_cb.currentText()
         tile_size = int(tile_text.split()[0])
 
-        # 在线程中运行推理（非阻塞）
-        self._patch_btn.setEnabled(False)
-        self._patch_btn.setText("⏳ 推理中...")
-
-        from PySide6.QtCore import QThread
         from liver_portal_crop.roi import ROIModel
-
-        # 构造一个临时 ROI
         patch_roi = ROIModel(
             slide_path=roi.slide_path, x=roi.x, y=roi.y,
             w=roi.w, h=roi.h, id="patch_test",
         )
-        self._patch_images = {"IHC": patch}
-        self._patch_mode = mode
-        self._patch_model_dir = model_dir
-        self._patch_tile_size = tile_size
 
-        # 用简单线程推理
-        self._patch_thread = QThread()
-        from PySide6.QtCore import QObject, Signal as QSignal
-
-        class _PatchWorker(QObject):
-            finished = QSignal(dict)
-            error = QSignal(str)
-            def run(self_):
-                try:
-                    from liver_portal_crop.deepliif_runner import infer_local, infer_cloud
-                    seg_only = self._seg_only_cb.isChecked()
-                    if mode == DeepLIIFMode.LOCAL:
-                        images, scoring = infer_local(
-                            patch, model_dir, tile_size, seg_only,
-                        )
-                    else:
-                        images, scoring = infer_cloud(
-                            patch, resolution="40x", seg_only=seg_only,
-                        )
-                    images["IHC"] = patch
-                    self_.finished.emit({
-                        "roi_id": "patch_test",
-                        "roi": patch_roi,
-                        "images": images,
-                        "scoring": scoring,
-                        "tile_size": tile_size,
-                    })
-                except Exception as e:
-                    self_.error.emit(str(e))
-
-        self._patch_worker = _PatchWorker()
-        self._patch_worker.moveToThread(self._patch_thread)
-        self._patch_thread.started.connect(self._patch_worker.run)
-        self._patch_worker.finished.connect(self._on_patch_done)
-        self._patch_worker.error.connect(self._on_patch_error)
-        self._patch_worker.finished.connect(self._patch_thread.quit)
-        self._patch_worker.error.connect(self._patch_thread.quit)
-        self._patch_thread.start()
-
-    def _on_patch_done(self, result: dict):
-        """小块推理完成，非模态打开结果窗口。"""
-        self._patch_btn.setEnabled(True)
-        self._patch_btn.setText("✂ 小块测试 (2000px)")
-
-        from liver_portal_crop.results_viewer import DeepLIIFResultsDialog
-        dlg = DeepLIIFResultsDialog(
-            [result], tile_size=self._patch_tile_size, parent=self,
-        )
-        dlg.setWindowTitle("小块测试 — 调好参数后关闭，再点「开始分析」批量处理")
-        dlg.show()  # 非模态，不阻塞
-
-        # 用户关闭后，读取最终参数值并应用到滑块
-        # (结果 dialog 中的 seg_thresh / size_thresh 滑块值)
-        # 这些值已经通过 scoring dict 反映
-
-    def _on_patch_error(self, msg: str):
-        """小块推理失败。"""
-        self._patch_btn.setEnabled(True)
-        self._patch_btn.setText("✂ 小块测试 (2000px)")
-        QMessageBox.warning(self, "推理失败", msg)
+        # 将数据保存在实例上，由主窗口通过 dlg 引用读取
+        self._patch_data = {
+            "patch": patch,
+            "patch_roi": patch_roi,
+            "mode": mode,
+            "model_dir": model_dir,
+            "tile_size": tile_size,
+            "seg_only": self._seg_only_cb.isChecked(),
+        }
+        self.patch_confirmed.emit()
+        self.close()
 
     # ── 公共接口 ──
 
@@ -689,16 +630,16 @@ class DeepLIIFAnalysisDialog(QDialog):
         if not selected:
             QMessageBox.information(self, "提示", "请先选择至少一个 ROI")
             return
-        self.confirmed.emit(params, selected)
+        # 将参数保存在实例上，由主窗口通过 dlg 引用读取
+        self._confirmed_params = params
+        self._confirmed_rois = selected
+        self.confirmed.emit()
         self.close()
 
     def closeEvent(self, event):
         if self._thumb_worker and self._thumb_worker.isRunning():
             self._thumb_worker.cancel()
             self._thumb_worker.wait(3000)
-        if hasattr(self, '_patch_thread') and self._patch_thread and self._patch_thread.isRunning():
-            self._patch_thread.quit()
-            self._patch_thread.wait(3000)
         if hasattr(self, '_dl_thread') and self._dl_thread and self._dl_thread.isRunning():
             if hasattr(self, '_dl_worker') and self._dl_worker:
                 self._dl_worker.cancel()

@@ -477,6 +477,9 @@ class DeepLIIFResultsDialog(QDialog):
 
     def _on_thresh_changed(self, _=None):
         """滑块变化 → 防抖后重算。"""
+        logger.info("滑块变化: seg_thresh=%d, size_thresh=%d",
+                     self._seg_thresh_slider.value(),
+                     self._size_thresh_slider.value())
         self._seg_thresh_lbl.setText(
             f"Intensity Threshold: {self._seg_thresh_slider.value()}"
         )
@@ -535,25 +538,35 @@ class DeepLIIFResultsDialog(QDialog):
 
     def _reprocess(self):
         if not self._current_roi_id:
+            logger.info("_reprocess: 跳过，无当前 ROI")
             return
         if self._reprocess_thread is not None:
             self._pending_reprocess = True
+            logger.info("_reprocess: 线程忙，标记 pending")
             return
 
         result = self._results.get(self._current_roi_id)
         if not result:
+            logger.info("_reprocess: 跳过，无结果数据")
             return
 
         images = result.get("images", {})
         orig = images.get("IHC")
         seg = images.get("Seg")
         if orig is None or seg is None:
+            logger.info(
+                "跳过 reprocess: %s (可用 keys: %s)",
+                "缺少 IHC" if orig is None else "缺少 Seg（云端 API 可能未返回原始分割掩码）",
+                list(images.keys()),
+            )
             return
 
         seg_thresh = self._seg_thresh_slider.value()
         size_thresh = self._size_thresh_slider.value()
         tile_size = result.get("tile_size", self._tile_size)
 
+        logger.info("_reprocess: 启动 worker, seg_thresh=%d, size_thresh=%d, seg mode=%s",
+                     seg_thresh, size_thresh, seg.mode)
         self._reprocess_request_id += 1
         request_id = self._reprocess_request_id
         worker = _ReprocessWorker(
@@ -589,7 +602,10 @@ class DeepLIIFResultsDialog(QDialog):
         processed_images: dict,
         scoring: dict,
     ):
+        logger.info("_on_reprocess_finished: req=%d, roi=%s, keys=%s",
+                     request_id, roi_id, list(processed_images.keys()))
         if request_id != self._reprocess_request_id or roi_id != self._current_roi_id:
+            logger.info("reprocess 结果已过期，丢弃")
             return
         if (
             seg_thresh != self._seg_thresh_slider.value()

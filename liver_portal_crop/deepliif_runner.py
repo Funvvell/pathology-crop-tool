@@ -404,6 +404,7 @@ def infer_cloud(
         except Exception as e:
             logger.warning("解码模态图像 %s 失败: %s", name, e)
 
+    logger.info("云端返回图像 keys: %s", list(images.keys()))
     scoring = data.get("scoring")
     return images, scoring
 
