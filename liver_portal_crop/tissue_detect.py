@@ -209,7 +209,7 @@ def tissue_regions_to_rois(
 #  参数调节对话框
 # ═══════════════════════════════════════════════════
 
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtCore import Qt, QRectF, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
@@ -236,7 +236,9 @@ class TissueDialog(QDialog):
         self._result: dict | None = None
         self._setup_ui()
         self._recalc_frame()
-        self._update_preview()
+        # 延迟到对话框显示后再计算预览，避免 __init__ 中同步运行
+        # detect_tissue()（CPU密集型）阻塞主线程导致窗口闪烁
+        QTimer.singleShot(0, self._update_preview)
 
     def _setup_ui(self):
         vl = QVBoxLayout(self)
@@ -257,6 +259,7 @@ class TissueDialog(QDialog):
         self._mag_cb.addItems(["4x", "10x", "20x", "40x", "80x"])
         self._mag_cb.setCurrentText("20x")
         self._mag_cb.currentTextChanged.connect(self._recalc_frame)
+        self._mag_cb.currentTextChanged.connect(self._update_preview)
         form.addRow("倍率:", self._mag_cb)
 
         # 比例
@@ -264,6 +267,7 @@ class TissueDialog(QDialog):
         self._ratio_cb.addItems(["Free", "1:1", "4:3", "3:2", "16:9"])
         self._ratio_cb.setCurrentText("16:9")
         self._ratio_cb.currentTextChanged.connect(self._recalc_frame)
+        self._ratio_cb.currentTextChanged.connect(self._update_preview)
         form.addRow("比例:", self._ratio_cb)
 
         # 框尺寸（只读）
@@ -342,7 +346,7 @@ class TissueDialog(QDialog):
         vl.addLayout(btn_lay)
 
     def _recalc_frame(self):
-        """倍率/比例变化时重新计算框尺寸并更新预览。"""
+        """倍率/比例变化时重新计算框尺寸（预览由信号链单独触发）。"""
         mag_text = self._mag_cb.currentText()
         ratio_text = self._ratio_cb.currentText()
         if self._mpp <= 0 or mag_text == "自定义" or ratio_text == "Free":
@@ -359,7 +363,6 @@ class TissueDialog(QDialog):
         self._tile_w = round(w * 1000 / self._mpp)
         self._tile_h = round(h * 1000 / self._mpp)
         self._frame_lbl.setText(f"{self._tile_w} × {self._tile_h}")
-        self._update_preview()
 
     def _update_preview(self, _=None):
         result = detect_tissue(
