@@ -18,7 +18,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pyinstaller
+        run: |
+          pip install PySide6>=6.6 sdpc-for-python>=1.0 numpy Pillow tifffile scipy scikit-image scikit-learn requests pyinstaller
+          pip install deepliif --no-deps
 
       - name: Build exe
         run: pyinstaller build.spec --noconfirm
