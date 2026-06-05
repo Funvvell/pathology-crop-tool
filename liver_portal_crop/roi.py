@@ -20,6 +20,7 @@ class ROIModel:
     y: int
     w: int
     h: int
+    angle: float = 0.0
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -85,6 +86,7 @@ class ROIManager(QObject):
                 y=item.get("y", item.get("thumb_y", 0)),
                 w=item.get("w", item.get("thumb_w", 0)),
                 h=item.get("h", item.get("thumb_h", 0)),
+                angle=item.get("angle", 0.0),
                 created_at=datetime.fromisoformat(item["created_at"]),
             )
             self._rois[roi.id] = roi

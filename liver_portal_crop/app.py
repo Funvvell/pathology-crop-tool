@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QRectF, QThread, QTimer
 from PySide6.QtWidgets import QDialog
@@ -11,7 +14,7 @@ from PySide6.QtGui import QAction, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QMenuBar, QMessageBox,
-    QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
+    QProgressBar, QPushButton, QSlider, QSpinBox, QSplitter, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -138,6 +141,19 @@ class MainWindow(QMainWindow):
         self._frame_h_spin.valueChanged.connect(self._update_frame_size)
         tbar.addWidget(self._frame_h_spin)
 
+        tbar.addWidget(QLabel("角度:"))
+        self._frame_angle_slider = QSlider(Qt.Orientation.Horizontal)
+        self._frame_angle_slider.setRange(0, 359)
+        self._frame_angle_slider.setSingleStep(5)
+        self._frame_angle_slider.setPageStep(15)
+        self._frame_angle_slider.setFixedWidth(100)
+        self._frame_angle_slider.valueChanged.connect(self._on_frame_angle_changed)
+        tbar.addWidget(self._frame_angle_slider)
+        self._frame_angle_label = QLabel("0°")
+        self._frame_angle_label.setFixedWidth(32)
+        self._frame_angle_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        tbar.addWidget(self._frame_angle_label)
+
         self._progress_bar = QProgressBar()
         self._progress_bar.setObjectName("exportProgress")
         self._progress_bar.setRange(0, 100)
@@ -151,6 +167,13 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setFixedSize(22, 22)
         self._cancel_btn.setObjectName("cancelBtn")
         self._cancel_op = None
+        self._patch_worker = None
+        self._patch_thread = None
+        self._patch_results = None  # 缓存最近一次小块测试结果
+        self._deepliif_results = None  # 缓存最近一次批量分析结果
+        self._deepliif_worker = None
+        self._deepliif_thread = None
+        self._active_result_dlg = None  # 当前打开的结果对话框引用
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
         self._cancel_btn.hide()
         tbar.addWidget(self._cancel_btn)
@@ -294,7 +317,7 @@ class MainWindow(QMainWindow):
 
         self._deepliif_btn = QPushButton("🔬 DeepLIIF 分析")
         self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
-        self._deepliif_btn.clicked.connect(self._run_deepliif)
+        self._deepliif_btn.clicked.connect(self._on_deepliif_btn_clicked)
         self._deepliif_btn.setVisible(False)
         right_layout.addWidget(self._deepliif_btn)
 
@@ -357,6 +380,7 @@ class MainWindow(QMainWindow):
         self._canvas.roi_rect_changed.connect(self._on_roi_rect_changed)
         self._canvas.roi_selection_changed.connect(self._on_roi_selection_changed)
         self._canvas.viewport_changed.connect(self._nav.update_viewport)
+        self._canvas.frame_angle_changed.connect(self._on_canvas_frame_angle_changed)
         self._nav.navigated.connect(self._on_nav_clicked)
 
     def _setup_menu(self) -> None:
@@ -413,7 +437,7 @@ class MainWindow(QMainWindow):
                 self._presets = {}
         # 确保有默认预设
         if "默认" not in self._presets:
-            self._presets["默认"] = {"mag": "20x", "ratio": "16:9", "w": 512, "h": 512}
+            self._presets["默认"] = {"mag": "20x", "ratio": "16:9", "w": 512, "h": 512, "angle": 0}
         self._preset_cb.blockSignals(True)
         self._preset_cb.clear()
         self._preset_cb.addItems(list(self._presets.keys()))
@@ -433,6 +457,7 @@ class MainWindow(QMainWindow):
             "ratio": self._ratio_cb.currentText(),
             "w": self._frame_w_spin.value(),
             "h": self._frame_h_spin.value(),
+            "angle": self._frame_angle_slider.value(),
         }
         try:
             PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -454,15 +479,20 @@ class MainWindow(QMainWindow):
         self._ratio_cb.blockSignals(True)
         self._frame_w_spin.blockSignals(True)
         self._frame_h_spin.blockSignals(True)
+        self._frame_angle_slider.blockSignals(True)
         self._mag_cb.setCurrentText(preset.get("mag", "20x"))
         self._ratio_cb.setCurrentText(preset.get("ratio", "16:9"))
         self._frame_w_spin.setValue(preset.get("w", 512))
         self._frame_h_spin.setValue(preset.get("h", 512))
+        self._frame_angle_slider.setValue(preset.get("angle", 0))
+        self._frame_angle_label.setText(f"{self._frame_angle_slider.value()}°")
         self._mag_cb.blockSignals(False)
         self._ratio_cb.blockSignals(False)
         self._frame_w_spin.blockSignals(False)
         self._frame_h_spin.blockSignals(False)
+        self._frame_angle_slider.blockSignals(False)
         self._canvas.set_frame_size(preset.get("w", 512), preset.get("h", 512))
+        self._canvas.set_frame_angle(float(preset.get("angle", 0)))
 
     # ── 文件管理 ──────────────────────────────────────
 
@@ -578,18 +608,32 @@ class MainWindow(QMainWindow):
             self._ratio_cb.setCurrentText("Free")
             self._ratio_cb.blockSignals(False)
 
+    def _on_frame_angle_changed(self, value: int) -> None:
+        """浮选框角度变化 → 同步到画布和标签。"""
+        self._frame_angle_label.setText(f"{value}°")
+        self._canvas.set_frame_angle(float(value))
+
+    def _on_canvas_frame_angle_changed(self, angle: float) -> None:
+        """画布右键拖拽改变角度 → 同步滑块和标签。"""
+        self._frame_angle_slider.blockSignals(True)
+        self._frame_angle_slider.setValue(int(round(angle)) % 360)
+        self._frame_angle_slider.blockSignals(False)
+        self._frame_angle_label.setText(f"{int(round(angle)) % 360}°")
+
     def _toggle_roi_mode(self, checked: bool) -> None:
         self._canvas.set_roi_mode(checked)
         if checked:
             self._update_frame_size()
+            angle = self._frame_angle_slider.value()
             self._status_label.setText(
-                f"ROI 模式 | 框 {self._frame_w_spin.value()}×{self._frame_h_spin.value()} | 空格创建"
+                f"ROI 模式 | 框 {self._frame_w_spin.value()}×{self._frame_h_spin.value()}"
+                f" | 角度 {angle}° | 空格创建"
             )
             self._canvas.setFocus()
         else:
             self._status_label.setText("浏览模式")
 
-    def _on_canvas_roi_created(self, roi_id: str, rect) -> None:
+    def _on_canvas_roi_created(self, roi_id: str, rect, angle: float = 0.0) -> None:
         if self._current_slide is None or self._current_slide not in self._readers:
             return
         roi = ROIModel(
@@ -598,6 +642,7 @@ class MainWindow(QMainWindow):
             y=int(rect.y()),
             w=int(rect.width()),
             h=int(rect.height()),
+            angle=round(angle, 2),
             id=roi_id,
         )
         self._roi_manager.add_roi(roi)
@@ -613,14 +658,15 @@ class MainWindow(QMainWindow):
             self._selected_roi_id = None
             self._on_roi_selection_changed("")
 
-    def _on_roi_rect_changed(self, roi_id: str, new_rect) -> None:
-        """ROI 被鼠标拖拽/缩放后更新 ROIModel 坐标。"""
+    def _on_roi_rect_changed(self, roi_id: str, new_rect, angle: float = 0.0) -> None:
+        """ROI 被鼠标拖拽/缩放/旋转后更新 ROIModel 坐标。"""
         for roi in self._roi_manager.all_rois():
             if roi.id == roi_id:
                 roi.x = int(new_rect.x())
                 roi.y = int(new_rect.y())
                 roi.w = int(new_rect.width())
                 roi.h = int(new_rect.height())
+                roi.angle = round(angle, 2)
                 self._refresh_roi_list()
                 self._update_roi_spins()
                 break
@@ -713,7 +759,8 @@ class MainWindow(QMainWindow):
             return
         for roi in self._roi_manager.get_slide_rois(self._current_slide):
             from PySide6.QtCore import QRectF
-            self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h))
+            self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h),
+                                       angle=roi.angle)
 
     def _refresh_roi_list(self) -> None:
         self._roi_list.clear()
@@ -1029,7 +1076,8 @@ class MainWindow(QMainWindow):
                 self._refresh_roi_list()
                 for roi in self._roi_manager.get_slide_rois(self._current_slide):
                     from PySide6.QtCore import QRectF
-                    self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h))
+                    self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h),
+                                               angle=roi.angle)
             cfg = data.get("config", {})
             self._crop_config = CropConfig(
                 output_dir=Path(
@@ -1114,12 +1162,34 @@ class MainWindow(QMainWindow):
         self._canvas.clear_roi_rects()
         if self._current_slide and self._current_slide in self._readers:
             for roi in self._roi_manager.get_slide_rois(self._current_slide):
-                self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h))
+                self._canvas.add_roi_rect(roi.id, QRectF(roi.x, roi.y, roi.w, roi.h),
+                                           angle=roi.angle)
 
         self._refresh_roi_list()
         self._status_label.setText(f"组织检测: 共 {total_all} 个 ROI")
 
     # ── DeepLIIF 分析 ──────────────────────────────────
+
+    def _on_deepliif_btn_clicked(self) -> None:
+        """DeepLIIF 按钮点击 — 根据状态分派。"""
+        # 有打开的结果窗口 → 切换显示/隐藏
+        if self._active_result_dlg is not None:
+            if self._active_result_dlg.isVisible():
+                self._active_result_dlg.hide()
+            else:
+                self._active_result_dlg.show()
+                self._active_result_dlg.raise_()
+                self._active_result_dlg.activateWindow()
+            return
+
+        if self._patch_results:
+            self._show_patch_results()
+        elif self._deepliif_results:
+            self._show_deepliif_results()
+        elif self._patch_worker is not None or self._deepliif_worker is not None:
+            pass  # 推理进行中，无操作
+        else:
+            self._run_deepliif()
 
     def _run_deepliif(self) -> None:
         """启动 DeepLIIF 分析流程。"""
@@ -1142,16 +1212,27 @@ class MainWindow(QMainWindow):
             magnification=mag_text,
             parent=self,
         )
-        dlg.confirmed.connect(self._on_deepliif_confirmed)
+        dlg.confirmed.connect(lambda: self._on_deepliif_confirmed(dlg))
+        dlg.patch_confirmed.connect(lambda: self._on_patch_confirmed(dlg))
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.show()
 
-    def _on_deepliif_confirmed(self, params: dict, selected_rois: list):
+    def _on_deepliif_confirmed(self, dlg: DeepLIIFAnalysisDialog):
         """分析对话框确认 — 启动后台推理。"""
-        if not selected_rois:
+        params = getattr(dlg, '_confirmed_params', None)
+        selected_rois = getattr(dlg, '_confirmed_rois', None)
+        if not params or not selected_rois:
             return
 
-        # 确定推理模式
+        try:
+            self._start_deepliif_worker(params, selected_rois)
+        except Exception as e:
+            logger.error("启动 DeepLIIF 分析失败: %s", e, exc_info=True)
+            QMessageBox.critical(self, "DeepLIIF 启动失败", str(e))
+
+    def _start_deepliif_worker(self, params: dict, selected_rois: list):
+        """创建并启动 DeepLIIF 推理线程。"""
+        self._deepliif_results = None
         if params["mode"] == "local":
             mode = DeepLIIFMode.LOCAL
             model_dir = params["model_dir"]
@@ -1173,6 +1254,7 @@ class MainWindow(QMainWindow):
         self._preview_progress.show()
         self._preview_cancel_btn.show()
         self._deepliif_btn.setText("⏳ 分析中...")
+        self._deepliif_btn.setToolTip("DeepLIIF 批量推理进行中…")
         self._status_label.setText("DeepLIIF 分析中...")
 
         # 创建 Worker 和线程（不能有 parent，否则无法 moveToThread）
@@ -1222,43 +1304,187 @@ class MainWindow(QMainWindow):
         self._deepliif_worker = None
 
     def _on_deepliif_finished(self, results: list):
-        """DeepLIIF 推理完成 — 非模态打开结果窗口，不阻塞主程序。"""
+        """DeepLIIF 推理完成 — 缓存结果，更新按钮。"""
+        self._patch_results = None
         self._deepliif_btn.setEnabled(True)
-        self._deepliif_btn.setText("🔬 DeepLIIF 分析")
         self._preview_progress.hide()
         self._preview_cancel_btn.hide()
         self._cancel_op = None
 
         if not results:
+            self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+            self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
             self._status_label.setText("DeepLIIF 分析: 无结果")
             return
 
-        self._status_label.setText(f"DeepLIIF 分析完成: {len(results)} 个 ROI")
         self._deepliif_results = results
-
-        # 非模态打开结果查看器，不阻塞主窗口
-        tile_size = results[0].get("tile_size", 512) if results else 512
-        dlg = DeepLIIFResultsDialog(results, tile_size=tile_size, parent=self)
-        dlg.overlay_requested.connect(self._apply_overlay_to_canvas)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        dlg.show()
-        # 保存引用防止被 GC 回收
-        self._deepliif_result_dialogs = getattr(self, '_deepliif_result_dialogs', [])
-        self._deepliif_result_dialogs.append(dlg)
-        dlg.destroyed.connect(
-            lambda: self._deepliif_result_dialogs.remove(dlg)
-            if dlg in self._deepliif_result_dialogs else None
-        )
+        self._deepliif_btn.setText("🔬 查看分析结果")
+        self._deepliif_btn.setToolTip("点击打开 DeepLIIF 分析结果")
+        self._status_label.setText(f"DeepLIIF 分析完成: {len(results)} 个 ROI — 点击按钮查看结果")
 
     def _on_deepliif_error(self, msg: str):
         """DeepLIIF 推理错误。"""
+        self._patch_results = None
+        self._deepliif_results = None
         self._deepliif_btn.setEnabled(True)
         self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+        self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
         self._preview_progress.hide()
         self._preview_cancel_btn.hide()
         self._cancel_op = None
         self._status_label.setText("DeepLIIF 分析出错")
         QMessageBox.warning(self, "DeepLIIF 错误", msg)
+
+    def _show_deepliif_results(self):
+        """打开缓存的批量分析结果对话框。"""
+        if not self._deepliif_results:
+            return
+        tile_size = self._deepliif_results[0].get("tile_size", 512)
+        dlg = DeepLIIFResultsDialog(
+            self._deepliif_results, tile_size=tile_size, parent=self,
+        )
+        dlg.overlay_requested.connect(self._apply_overlay_to_canvas)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._active_result_dlg = dlg
+        dlg.show()
+        # 保存引用防止 GC
+        self._deepliif_result_dialogs = getattr(self, '_deepliif_result_dialogs', [])
+        self._deepliif_result_dialogs.append(dlg)
+        # 对话框关闭后：移除引用，若无剩余则重置按钮
+        def _on_closed():
+            if dlg in self._deepliif_result_dialogs:
+                self._deepliif_result_dialogs.remove(dlg)
+            if self._active_result_dlg is dlg:
+                self._active_result_dlg = None
+            if not self._deepliif_result_dialogs:
+                self._deepliif_results = None
+                self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+                self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
+        dlg.destroyed.connect(_on_closed)
+
+    # ── 小块测试（主窗口生命周期管理）──────────────────────
+
+    def _on_patch_confirmed(self, dlg: DeepLIIFAnalysisDialog):
+        """小块测试对话框确认 — 启动后台推理。"""
+        patch_data = getattr(dlg, '_patch_data', None)
+        if not patch_data:
+            return
+        try:
+            self._start_patch_test(patch_data)
+        except Exception as e:
+            logger.error("启动小块测试失败: %s", e, exc_info=True)
+            QMessageBox.critical(self, "小块测试启动失败", str(e))
+
+    def _start_patch_test(self, data: dict):
+        """创建并启动小块测试推理线程。"""
+        from PySide6.QtCore import QObject, Signal as QSignal
+
+        self._patch_results = None
+        self._deepliif_btn.setText("⏳ 小块测试中...")
+        self._deepliif_btn.setToolTip("小块推理进行中…")
+        self._status_label.setText("小块测试推理中...")
+
+        self._patch_thread = QThread()
+
+        patch = data["patch"]
+        mode = data["mode"]
+        model_dir = data["model_dir"]
+        tile_size = data["tile_size"]
+        seg_only = data["seg_only"]
+        patch_roi = data["patch_roi"]
+
+        class _PatchWorker(QObject):
+            finished = QSignal(dict)
+            error = QSignal(str)
+            def run(self_):
+                try:
+                    from liver_portal_crop.deepliif_runner import (
+                        infer_local, infer_cloud, DeepLIIFMode,
+                    )
+                    if mode == DeepLIIFMode.LOCAL:
+                        images, scoring = infer_local(
+                            patch, model_dir, tile_size, seg_only,
+                        )
+                    else:
+                        images, scoring = infer_cloud(
+                            patch, resolution="40x", seg_only=seg_only,
+                        )
+                    images["IHC"] = patch
+                    self_.finished.emit({
+                        "roi_id": "patch_test",
+                        "roi": patch_roi,
+                        "images": images,
+                        "scoring": scoring,
+                        "tile_size": tile_size,
+                    })
+                except Exception as e:
+                    self_.error.emit(str(e))
+
+        self._patch_worker = _PatchWorker()
+        self._patch_worker.moveToThread(self._patch_thread)
+        self._patch_thread.started.connect(self._patch_worker.run)
+        self._patch_worker.finished.connect(self._on_patch_done)
+        self._patch_worker.error.connect(self._on_patch_error)
+        self._patch_worker.finished.connect(self._patch_test_cleanup)
+        self._patch_worker.error.connect(self._patch_test_cleanup)
+        self._cancel_op = lambda: None  # 小块测试暂不支持取消
+        self._patch_thread.start()
+
+    def _on_patch_done(self, result: dict):
+        """小块推理完成 — 缓存结果，更新按钮。"""
+        self._patch_results = [result]
+        self._deepliif_btn.setText("🔬 查看小块结果")
+        self._deepliif_btn.setToolTip("点击重新打开小块测试结果")
+        self._status_label.setText("小块测试完成 — 点击按钮查看结果")
+        self._cancel_op = None
+
+    def _on_patch_error(self, msg: str):
+        """小块推理失败。"""
+        self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+        self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
+        self._status_label.setText("小块测试出错")
+        self._cancel_op = None
+        QMessageBox.warning(self, "小块测试失败", msg)
+
+    def _patch_test_cleanup(self):
+        """小块测试线程结束后清理。"""
+        thread = self._patch_thread
+        worker = self._patch_worker
+        if thread is not None:
+            thread.quit()
+            thread.wait(3000)
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+        self._patch_thread = None
+        self._patch_worker = None
+
+    def _show_patch_results(self):
+        """打开缓存的小块测试结果对话框。"""
+        if not self._patch_results:
+            return
+        tile_size = self._patch_results[0].get("tile_size", 512)
+        dlg = DeepLIIFResultsDialog(
+            self._patch_results, tile_size=tile_size, parent=self,
+        )
+        dlg.setWindowTitle("小块测试 — 调好参数后关闭，再点「开始分析」批量处理")
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._active_result_dlg = dlg
+        dlg.show()
+        # 保存引用防止 GC
+        self._deepliif_result_dialogs = getattr(self, '_deepliif_result_dialogs', [])
+        self._deepliif_result_dialogs.append(dlg)
+        # 对话框关闭后清除缓存，按钮恢复
+        def _on_closed():
+            if dlg in self._deepliif_result_dialogs:
+                self._deepliif_result_dialogs.remove(dlg)
+            if self._active_result_dlg is dlg:
+                self._active_result_dlg = None
+            self._patch_results = None
+            self._deepliif_btn.setText("🔬 DeepLIIF 分析")
+            self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
+        dlg.destroyed.connect(_on_closed)
 
     def _apply_overlay_to_canvas(self, roi_id: str, qimage: QImage,
                                   x: int, y: int, w: int, h: int,

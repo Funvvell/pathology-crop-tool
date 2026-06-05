@@ -8,6 +8,7 @@ dist/
 # Virtual environments
 venv/
 .venv/
+.venv*/
 env/
 
 # IDE
@@ -31,3 +32,12 @@ session.json
 
 # Build
 build/
+
+# Claude Code
+.agents/
+.claude/
+.playwright-mcp/
+docs/superpowers/
+
+# Screenshots
+test_card_screenshot.png
