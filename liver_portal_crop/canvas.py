@@ -22,6 +22,10 @@ from PySide6.QtWidgets import (
 )
 
 from liver_portal_crop.reader import SDPCReader
+from liver_portal_crop.constants import (
+    TILE_SIZE, MAX_TILE_CACHE, RENDER_DEBOUNCE_MS, PRELOAD_MARGIN,
+    MIN_ROI_SIZE, ROI_ID_LENGTH,
+)
 
 
 class RotateHandle(QGraphicsEllipseItem):
@@ -38,8 +42,8 @@ class RotateHandle(QGraphicsEllipseItem):
         super().__init__(-hs // 2, -hs // 2, hs, hs, parent_roi)
         self._parent_roi = parent_roi
         self.setAcceptHoverEvents(True)
-        self.setBrush(QBrush(QColor(255, 165, 0)))  # 橙色
-        self.setPen(QPen(QColor(200, 100, 0), 2))
+        self.setBrush(QBrush(QColor(255, 159, 10)))  # Apple 橙色
+        self.setPen(QPen(QColor(255, 120, 0), 1.5))
         self.setZValue(2)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -94,7 +98,7 @@ class ResizeHandle(QGraphicsEllipseItem):
         self._pos_y = pos_y
         self.setAcceptHoverEvents(True)
         self.setBrush(QBrush(Qt.GlobalColor.white))
-        self.setPen(QPen(QColor(0, 120, 215), 2))
+        self.setPen(QPen(QColor(10, 132, 255), 1.5))
         self.setZValue(1)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
         self._drag_start_rect: QRectF | None = None
@@ -177,9 +181,9 @@ class ROIRectItem(QGraphicsRectItem):
             | QGraphicsItem.GraphicsItemFlag.ItemIsMovable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
-        self.setPen(QPen(QColor(0, 120, 215), 2))
-        self.setBrush(QBrush(QColor(0, 120, 215, 30)))
-        self._hover_pen = QPen(QColor(255, 0, 0), 3)
+        self.setPen(QPen(QColor(10, 132, 255), 2))
+        self.setBrush(QBrush(QColor(10, 132, 255, 25)))
+        self._hover_pen = QPen(QColor(255, 69, 58), 2.5)
         self._block_sync = False
         # 旋转：以矩形中心为原点
         r = rect
@@ -242,9 +246,9 @@ class ROIRectItem(QGraphicsRectItem):
         for child in self.childItems():
             child.setVisible(selected)
         if selected:
-            self.setPen(QPen(QColor(255, 120, 0), 3))  # 橙色
+            self.setPen(QPen(QColor(255, 159, 10), 2.5))  # Apple 橙色（选中）
         else:
-            self.setPen(QPen(QColor(0, 120, 215), 2))  # 蓝色
+            self.setPen(QPen(QColor(10, 132, 255), 2))    # Apple 蓝色（默认）
 
     def hoverEnterEvent(self, event):
         self.setPen(self._hover_pen)
@@ -252,7 +256,7 @@ class ROIRectItem(QGraphicsRectItem):
 
     def hoverLeaveEvent(self, event):
         if not self.isSelected():
-            self.setPen(QPen(QColor(0, 120, 215), 2))
+            self.setPen(QPen(QColor(10, 132, 255), 2))
         super().hoverLeaveEvent(event)
 
     def itemChange(self, change, value):
@@ -317,7 +321,7 @@ class WSICanvas(QGraphicsView):
         self._reader: SDPCReader | None = None
         self._tile_cache: OrderedDict[tuple, QPixmap] = OrderedDict()
         self._tile_items: dict[tuple, QGraphicsPixmapItem] = {}
-        self._max_cache = 512
+        self._max_cache = MAX_TILE_CACHE
 
         # ROI
         self._roi_items: dict[str, ROIRectItem] = {}
@@ -347,13 +351,17 @@ class WSICanvas(QGraphicsView):
 
     def load_slide(self, reader: SDPCReader) -> None:
         """加载 WSI，场景设为全分辨率坐标系。"""
-        self._reader = reader
-        self._scene.clear()
-        self._roi_items.clear()
-        self._frame_item = None
-        self._tile_cache.clear()
+        # 清理旧缓存（先删除 Qt 对象，再清理引用）
+        for item in self._tile_items.values():
+            self._scene.removeItem(item)
         self._tile_items.clear()
+        self._tile_cache.clear()
+        self._roi_items.clear()
+        self._scene.clear()
+        self._frame_item = None
         self._frame_angle = 0.0
+
+        self._reader = reader
 
         w, h = reader.full_width, reader.full_height
         self._scene.setSceneRect(0, 0, w, h)
@@ -365,7 +373,7 @@ class WSICanvas(QGraphicsView):
         # 通知导航缩略图
         self.viewport_changed.emit(QRectF(0, 0, w, h))
         # 延迟触发 tile 加载
-        self._render_timer.start(200)
+        self._render_timer.start(RENDER_DEBOUNCE_MS)
 
     def _load_background_thumb(self) -> None:
         """加载缩略图作为底层背景（无缩放的 QGraphicsPixmapItem）。"""
@@ -465,11 +473,11 @@ class WSICanvas(QGraphicsView):
 
     def _show_frame(self) -> None:
         if self._frame_item is None:
-            pen = QPen(QColor(0, 255, 0), 3)
+            pen = QPen(QColor(48, 209, 88), 2.5)
             pen.setStyle(Qt.PenStyle.DashLine)
             self._frame_item = QGraphicsRectItem(0, 0, self._frame_w, self._frame_h)
             self._frame_item.setPen(pen)
-            self._frame_item.setBrush(QBrush(QColor(0, 255, 0, 12)))
+            self._frame_item.setBrush(QBrush(QColor(48, 209, 88, 15)))
             self._frame_item.setZValue(1000)
             self._frame_item.setTransformOriginPoint(
                 self._frame_w / 2, self._frame_h / 2)
@@ -564,8 +572,8 @@ class WSICanvas(QGraphicsView):
             return
 
         # 分块读取
-        tile_w = min(lw, 1024)
-        tile_h = min(lh, 1024)
+        tile_w = min(lw, TILE_SIZE)
+        tile_h = min(lh, TILE_SIZE)
 
         needed_tiles = set()
         for ty in range(ly, ly + lh, tile_h):

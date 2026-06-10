@@ -25,7 +25,19 @@ _DLL_DIR = _SDPC_PKG_DIR / "WINDOWS" / "dll"
 os.environ["PATH"] = str(_DLL_DIR) + os.pathsep + os.environ.get("PATH", "")
 os.chdir(str(_DLL_DIR))
 
-_so = cdll.LoadLibrary(str(_DLL_DIR / "DecodeSdpcDll.dll"))
+# 增强错误处理：DLL 加载失败时提供清晰的指导信息
+_dll_path = _DLL_DIR / "DecodeSdpcDll.dll"
+try:
+    _so = cdll.LoadLibrary(str(_dll_path))
+except OSError as e:
+    raise RuntimeError(
+        f"无法加载 SDPC DLL: {_dll_path}\n"
+        f"错误信息: {e}\n\n"
+        "请确保:\n"
+        "1. 已安装 sdpc-for-python 包: pip install sdpc-for-python\n"
+        f"2. DLL 目录存在: {_DLL_DIR}\n"
+        "3. 系统已安装 Visual C++ Redistributable"
+    ) from e
 
 # DLL 全局锁 — DecodeSdpcDll.dll 不是线程安全的（有全局状态），
 # 所有跨实例的 DLL 调用必须串行化

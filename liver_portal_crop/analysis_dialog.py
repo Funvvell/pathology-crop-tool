@@ -136,7 +136,7 @@ class _ROICard(QWidget):
         self._img_label = QLabel(self._container)
         self._img_label.setGeometry(0, 0, thumb_size, thumb_size)
         self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_label.setStyleSheet("background: #1e293b; border-radius: 4px;")
+        self._img_label.setStyleSheet("background: #3a3a3c; border-radius: 6px;")
         self._check_lbl = QLabel("✓" if self._checked else "", self._container)
         self._check_lbl.setGeometry(4, 4, 18, 18)
         self._check_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -146,7 +146,7 @@ class _ROICard(QWidget):
         # 尺寸标签
         self._size_label = QLabel(f"{roi.w}×{roi.h}")
         self._size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._size_label.setStyleSheet("color: #94a3b8; font-size: 10px;")
+        self._size_label.setStyleSheet("color: #86868b; font-size: 10px;")
         vl.addWidget(self._size_label)
 
     @property
@@ -173,12 +173,12 @@ class _ROICard(QWidget):
     def _update_check_style(self):
         if self._checked:
             self._check_lbl.setStyleSheet(
-                "background: #0891b2; color: white; border-radius: 3px;"
+                "background: #007AFF; color: white; border-radius: 5px;"
                 "font-size: 12px; font-weight: bold;"
             )
         else:
             self._check_lbl.setStyleSheet(
-                "background: #1e293b; color: #475569; border-radius: 3px;"
+                "background: #3a3a3c; color: #636366; border-radius: 5px;"
                 "font-size: 12px;"
             )
 
@@ -233,9 +233,9 @@ class DeepLIIFAnalysisDialog(QDialog):
 
         # 推理模式
         mode_lay = QHBoxLayout()
-        self._mode_local = QPushButton("🖥 本地模型")
+        self._mode_local = QPushButton("本地模型")
         self._mode_local.setCheckable(True)
-        self._mode_cloud = QPushButton("☁ 云端 API")
+        self._mode_cloud = QPushButton("云端 API")
         self._mode_cloud.setCheckable(True)
         self._mode_cloud.setChecked(True)  # 默认云端（无需模型文件）
         self._mode_local.clicked.connect(lambda: self._set_mode("local"))
@@ -262,11 +262,11 @@ class DeepLIIFAnalysisDialog(QDialog):
         # 模型状态 + 下载按钮
         self._model_status_lbl = QLabel()
         self._model_status_lbl.setWordWrap(True)
-        self._model_status_lbl.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self._model_status_lbl.setStyleSheet("color: #86868b; font-size: 11px;")
         self._model_status_lbl.setVisible(False)
         form.addRow("", self._model_status_lbl)
 
-        self._download_btn = QPushButton("⬇ 下载模型 (~500MB)")
+        self._download_btn = QPushButton("下载模型 (~500MB)")
         self._download_btn.setToolTip("从 Zenodo 下载 DeepLIIF 预训练模型")
         self._download_btn.clicked.connect(self._download_model)
         self._download_btn.setVisible(False)
@@ -283,7 +283,7 @@ class DeepLIIFAnalysisDialog(QDialog):
         # 处理模式说明
         self._mode_info = QLabel()
         self._mode_info.setWordWrap(True)
-        self._mode_info.setStyleSheet("color: #64748b; font-size: 11px;")
+        self._mode_info.setStyleSheet("color: #636366; font-size: 11px;")
         form.addRow("", self._mode_info)
 
         # 分析范围
@@ -319,7 +319,7 @@ class DeepLIIFAnalysisDialog(QDialog):
         btn_deselect = QPushButton("取消全选")
         btn_deselect.clicked.connect(self._deselect_all)
         self._count_label = QLabel(f"已选: {len(self._rois)}/{len(self._rois)}")
-        self._count_label.setStyleSheet("color: #94a3b8;")
+        self._count_label.setStyleSheet("color: #86868b;")
         toolbar.addWidget(btn_select_all)
         toolbar.addWidget(btn_invert)
         toolbar.addWidget(btn_deselect)
@@ -356,22 +356,23 @@ class DeepLIIFAnalysisDialog(QDialog):
 
         # ── 底部按钮 ──
         btn_lay = QHBoxLayout()
-        self._patch_btn = QPushButton("✂ 小块测试 (2000px)")
+        self._patch_btn = QPushButton("小块测试 (2000px)")
         self._patch_btn.setToolTip(
-            "从 ROI 中心裁 2000×2000 原像素小块直接推理\n"
+            "从 ROI 中心裁 2000x2000 原像素小块直接推理\n"
             "用于在结果窗口中交互式调参，确认参数后再批量分析"
         )
         self._patch_btn.clicked.connect(self._export_test_patch)
-        self._patch_btn.setMinimumHeight(32)
+        self._patch_btn.setMinimumHeight(26)
         btn_lay.addWidget(self._patch_btn)
 
-        self._start_btn = QPushButton("🚀 开始分析")
+        self._start_btn = QPushButton("开始分析")
         self._start_btn.setDefault(True)
+        self._start_btn.setObjectName("primaryBtn")
         self._start_btn.clicked.connect(self._on_confirm)
-        self._start_btn.setMinimumHeight(32)
+        self._start_btn.setMinimumHeight(26)
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.close)
-        cancel_btn.setMinimumHeight(32)
+        cancel_btn.setMinimumHeight(26)
         btn_lay.addWidget(self._start_btn)
         btn_lay.addWidget(cancel_btn)
         vl.addLayout(btn_lay)
@@ -410,11 +411,11 @@ class DeepLIIFAnalysisDialog(QDialog):
         ok, msg = check_model_available(model_dir)
         if ok:
             self._model_status_lbl.setText(f"✓ {msg}")
-            self._model_status_lbl.setStyleSheet("color: #22c55e; font-size: 11px;")
+            self._model_status_lbl.setStyleSheet("color: #30D158; font-size: 11px;")
             self._download_btn.setVisible(False)
         else:
             self._model_status_lbl.setText(msg)
-            self._model_status_lbl.setStyleSheet("color: #f59e0b; font-size: 11px;")
+            self._model_status_lbl.setStyleSheet("color: #FF9F0A; font-size: 11px;")
             self._download_btn.setVisible(True)
 
     def _download_model(self):
@@ -478,14 +479,14 @@ class DeepLIIFAnalysisDialog(QDialog):
         """下载完成。"""
         self._dl_progress.close()
         self._download_btn.setEnabled(True)
-        self._download_btn.setText("⬇ 下载模型 (~500MB)")
+        self._download_btn.setText("下载模型 (~500MB)")
         if ok:
             self._model_status_lbl.setText(f"✓ {msg}")
-            self._model_status_lbl.setStyleSheet("color: #22c55e; font-size: 11px;")
+            self._model_status_lbl.setStyleSheet("color: #30D158; font-size: 11px;")
             self._download_btn.setVisible(False)
         else:
             self._model_status_lbl.setText(msg)
-            color = "#94a3b8" if "取消" in msg else "#ef4444"
+            color = "#86868b" if "取消" in msg else "#FF3B30"
             self._model_status_lbl.setStyleSheet(
                 f"color: {color}; font-size: 11px;"
             )

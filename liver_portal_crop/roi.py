@@ -10,6 +10,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from liver_portal_crop.constants import ROI_ID_LENGTH
+
 
 @dataclass
 class ROIModel:
@@ -21,7 +23,7 @@ class ROIModel:
     w: int
     h: int
     angle: float = 0.0
-    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:ROI_ID_LENGTH])
     created_at: datetime = field(default_factory=datetime.now)
 
 
