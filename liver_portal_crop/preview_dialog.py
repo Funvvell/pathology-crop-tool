@@ -53,11 +53,11 @@ class CheckIndicator(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect().adjusted(1, 1, -1, -1)
         if self._checked:
-            p.setBrush(QBrush(QColor("#0891b2")))
+            p.setBrush(QBrush(QColor("#007AFF")))
             p.setPen(Qt.PenStyle.NoPen)
         else:
-            p.setBrush(QBrush(QColor("#1e293b")))
-            p.setPen(QPen(QColor("#64748b"), 1.5))
+            p.setBrush(QBrush(QColor("#3a3a3c")))
+            p.setPen(QPen(QColor("#636366"), 1.5))
         p.drawEllipse(rect)
         p.end()
 
@@ -114,7 +114,7 @@ class ROICardWidget(QWidget):
         # 尺寸标签
         size_label = QLabel(f"{roi_w}x{roi_h}")
         size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        size_label.setStyleSheet("font-size: 10px; color: #94a3b8;")
+        size_label.setStyleSheet("font-size: 10px; color: #86868b;")
         layout.addWidget(size_label)
 
     def set_thumbnail(self, pixmap: QPixmap) -> None:
@@ -141,7 +141,7 @@ class ROICardWidget(QWidget):
 
     def set_loading_error(self) -> None:
         self._thumb_label.setText("加载失败")
-        self._thumb_label.setStyleSheet("color: #ef4444; font-size: 11px;")
+        self._thumb_label.setStyleSheet("color: #FF3B30; font-size: 11px;")
 
     def is_checked(self) -> bool:
         return self._indicator.is_checked()
@@ -264,7 +264,7 @@ class _TitleBar(QFrame):
         self._title_label.setObjectName("previewTitleLabel")
         layout.addWidget(self._title_label, 1)
 
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton("\u00d7")
         close_btn.setFixedSize(28, 28)
         close_btn.setObjectName("previewCloseBtn")
         close_btn.clicked.connect(self._on_close)
@@ -368,29 +368,29 @@ class FullResPreviewDialog(QDialog):
     def _setup_ui(self) -> None:
         self.setStyleSheet("""
             FullResPreviewDialog {
-                background: #0f172a;
-                border: 1px solid #334155;
-                border-radius: 8px;
+                background: #1c1c1e;
+                border: 1px solid #38383a;
+                border-radius: 12px;
             }
             #previewTitleBar {
-                background: #0c1322;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                border-bottom: 1px solid #1e293b;
+                background: #2c2c2e;
+                border-top-left-radius: 12px;
+                border-top-right-radius: 12px;
+                border-bottom: 1px solid rgba(84, 84, 88, 0.35);
             }
             #previewTitleLabel {
-                color: #e2e8f0;
+                color: #f5f5f7;
                 font-size: 13px;
                 font-weight: 600;
                 background: transparent;
             }
             #previewCloseBtn {
-                background: #334155;
-                border: 1px solid #475569;
-                color: #e2e8f0;
+                background: rgba(118, 118, 128, 0.24);
+                border: 1px solid rgba(84, 84, 88, 0.35);
+                color: #f5f5f7;
                 font-size: 14px;
                 font-weight: bold;
-                border-radius: 6px;
+                border-radius: 8px;
                 min-width: 28px;
                 max-width: 28px;
                 min-height: 28px;
@@ -398,24 +398,24 @@ class FullResPreviewDialog(QDialog):
                 padding: 0;
             }
             #previewCloseBtn:hover {
-                background: #ef4444;
-                border-color: #ef4444;
+                background: #FF3B30;
+                border-color: #FF3B30;
                 color: #fff;
             }
             #previewInfoLabel {
-                color: #94a3b8;
+                color: #86868b;
                 font-size: 11px;
                 background: transparent;
                 padding: 2px 12px;
             }
             #previewStatus {
-                color: #64748b;
+                color: #636366;
                 font-size: 11px;
-                background: #0c1322;
+                background: #2c2c2e;
                 padding: 2px 12px;
-                border-top: 1px solid #1e293b;
-                border-bottom-left-radius: 8px;
-                border-bottom-right-radius: 8px;
+                border-top: 1px solid rgba(84, 84, 88, 0.35);
+                border-bottom-left-radius: 12px;
+                border-bottom-right-radius: 12px;
             }
         """)
 
@@ -439,7 +439,7 @@ class FullResPreviewDialog(QDialog):
         self._view.setScene(self._scene)
         self._view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self._view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self._view.setStyleSheet("QGraphicsView { background: #0f172a; border: none; }")
+        self._view.setStyleSheet("QGraphicsView { background: #1c1c1e; border: none; }")
         layout.addWidget(self._view, 1)
 
         # 左侧切换按钮（overlay，手绘三角形确保居中）
@@ -706,7 +706,7 @@ class ROIPreviewDialog(QDialog):
             for file_name, _ in self._file_groups:
                 header = QLabel(f"  {file_name}")
                 header.setStyleSheet(
-                    "font-weight: 600; font-size: 12px; color: #0891b2; "
+                    "font-weight: 600; font-size: 12px; color: #007AFF; "
                     "padding: 4px 0; background: transparent;"
                 )
                 self._headers[file_name] = header
@@ -996,7 +996,7 @@ class ROIPreviewPanel(QWidget):
             if file_name not in self._headers:
                 header = QLabel(f"  {file_name}")
                 header.setStyleSheet(
-                    "font-weight: 600; font-size: 12px; color: #0891b2; "
+                    "font-weight: 600; font-size: 12px; color: #007AFF; "
                     "padding: 4px 0; background: transparent;"
                 )
                 self._headers[file_name] = header
@@ -1155,7 +1155,7 @@ class ROIPreviewPanel(QWidget):
         if card and not card.isHidden():
             card.setStyleSheet(
                 "background: rgba(8, 145, 178, 0.15); "
-                "border: 1px solid #0891b2; border-radius: 6px;"
+                "border: 1px solid #007AFF; border-radius: 8px;"
             )
             scroll = self.findChild(QScrollArea)
             if scroll:

@@ -272,7 +272,7 @@ class TissueDialog(QDialog):
 
         # 框尺寸（只读）
         self._frame_lbl = QLabel()
-        self._frame_lbl.setStyleSheet("color: #c1c2c5; font-size: 12px;")
+        self._frame_lbl.setStyleSheet("color: #aeaeb2; font-size: 12px;")
         form.addRow("框尺寸:", self._frame_lbl)
 
         # 适用范围（多文件时显示）
@@ -337,6 +337,7 @@ class TissueDialog(QDialog):
         # 底部按钮
         btn_lay = QHBoxLayout()
         self._gen_btn = QPushButton("生成 ROI")
+        self._gen_btn.setObjectName("primaryBtn")
         self._gen_btn.clicked.connect(self.accept)
         self._gen_btn.setDefault(True)
         btn_lay.addWidget(self._gen_btn)

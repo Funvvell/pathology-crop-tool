@@ -41,7 +41,7 @@ class NavigationWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # 背景
-        painter.fillRect(self.rect(), QColor(40, 40, 40))
+        painter.fillRect(self.rect(), QColor("#2c2c2e"))
 
         if self._thumb_pixmap is None or self._thumb_pixmap.isNull():
             painter.setPen(QColor(160, 160, 160))
@@ -76,8 +76,8 @@ class NavigationWidget(QWidget):
             vr = vr.intersected(QRectF(ox, oy, scaled.width(), scaled.height()))
 
             if vr.width() > 2 and vr.height() > 2:
-                painter.setPen(QPen(QColor(255, 50, 50), 2))
-                painter.setBrush(QBrush(QColor(255, 50, 50, 40)))
+                painter.setPen(QPen(QColor(255, 59, 48), 2))
+                painter.setBrush(QBrush(QColor(255, 59, 48, 40)))
                 painter.drawRect(vr)
 
         painter.end()
