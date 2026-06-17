@@ -26,6 +26,7 @@ from liver_portal_crop.ihc_hotspot import (
     _sample_otsu_threshold,
     _accumulate_tiled,
     _get_h_weights,
+    _process_single_tile,
     STAIN_LABELS,
 )
 
@@ -317,5 +318,70 @@ print(f"自动组织检测: tile {result_auto['tissue_tiles']}/{result_auto['tot
 assert "tissue_tiles" in result_auto
 assert "total_tiles" in result_auto
 assert result_auto["tissue_tiles"] <= result_auto["total_tiles"]
+
+# ─── 测试 10: 白色/空白区域像素过滤 ───
+print("\n--- 白色/空白区域过滤测试 ---")
+
+from liver_portal_crop.ihc_hotspot import _get_positive_weights
+
+# 10a: 全白 tile 应返回 None
+white_tile = np.full((512, 512, 3), 250, dtype=np.uint8)
+white_reader = MockReader(white_tile, downsample=1.0)
+dab_w = _get_positive_weights("H-DAB")
+binary_w, _ = _process_single_tile(
+    white_reader, 0, 0, 0, 512, 512,
+    dab_w, None, "otsu", 80.0, 0.0, 0.0,
+)
+assert binary_w is None, "全白 tile 应返回 None"
+print("全白 tile: 正确跳过")
+
+# 10b: 大部分白色 + 小阳性区域的 tile
+mixed_tile = np.full((512, 512, 3), 245, dtype=np.uint8)
+mixed_tile[200:300, 200:300] = [120, 60, 25]  # DAB 阳性小块
+mixed_reader = MockReader(mixed_tile, downsample=1.0)
+binary_m, _ = _process_single_tile(
+    mixed_reader, 0, 0, 0, 512, 512,
+    dab_w, None, "otsu", 80.0, 0.0, 0.0,
+)
+if binary_m is not None:
+    # 白色区域的阳性像素应被过滤
+    # 检查白色区域（非 DAB 小块）的阳性像素
+    white_region_mask = binary_m.copy()
+    white_region_mask[200:300, 200:300] = 0  # 移除已知的 DAB 区域
+    white_positive = (white_region_mask > 0).sum()
+    total_positive = (binary_m > 0).sum()
+    print(f"混合 tile: 总阳性像素 {total_positive}, 白色区域残留 {white_positive}")
+    # 白色区域应几乎没有阳性像素
+    if total_positive > 0:
+        white_ratio = white_positive / total_positive
+        print(f"白色区域阳性占比: {white_ratio:.2%}")
+        assert white_ratio < 0.1, f"白色区域残留阳性过多: {white_ratio:.2%}"
+else:
+    print("混合 tile: 信号不足，整体跳过（可接受）")
+
+# 10c: 完整流程中白色区域不产生热点
+white_bg = np.full((2000, 3000, 3), 248, dtype=np.uint8)
+# 添加轻微噪声模拟真实扫描背景（但仍保持高亮度）
+noise = np.random.randint(235, 255, (2000, 3000, 3), dtype=np.uint8)
+white_bg = np.where(white_bg > 240, noise, white_bg).astype(np.uint8)
+white_bg[400:800, 400:800] = [125, 70, 30]  # 唯一的真阳性区域
+mock_white = MockReader(white_bg, downsample=4.0)
+result_white = detect_ihc_hotspots_tiled(
+    reader=mock_white, level=0, stain_type="H-DAB",
+    threshold_method="otsu", min_area=50,
+    window_size=200, n_hotspots=5, min_density=0.01,
+    roi_w=200, roi_h=200, tile_size=1024,
+    analysis_ds=4, max_preview_dim=1024,
+)
+print(f"白底图: 阳性面积 {result_white['positive_pct']:.1f}%, 热点 {len(result_white['hotspots'])}")
+# 热点应集中在阳性区域附近，不应出现在纯白色区域
+if result_white["hotspots"]:
+    for i, (x, y, w, h, d) in enumerate(result_white["hotspots"]):
+        cx, cy = x + w // 2, y + h // 2
+        print(f"  #{i+1}: center=({cx},{cy})")
+        # 热点中心应在 DAB 区域附近 (400-800) * downsample=4
+        # 即 level-0 坐标 (1600-3200) 附近
+        assert cx < 5000, f"热点 #{i+1} x={cx} 远离组织区域"
+        assert cy < 5000, f"热点 #{i+1} y={cy} 远离组织区域"
 
 print("\n=== 全部测试通过 ===")

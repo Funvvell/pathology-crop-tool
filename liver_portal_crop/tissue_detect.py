@@ -100,6 +100,7 @@ def detect_tissue(
     fill_holes: bool = True,
     remove_small: bool = True,
     min_area_pct: float = 0.05,
+    max_brightness: int = 0,
 ) -> dict:
     """组织区域检测（基于 HistoKit 三通道阈值法）。
 
@@ -110,6 +111,9 @@ def detect_tissue(
         fill_holes: 填充组织内部孔洞
         remove_small: 移除小碎片
         min_area_pct: 最小组织面积占比（相对最大区域）
+        max_brightness: 亮度上限 (>0 时启用)，三通道均超过此值的像素
+                        强制判定为背景。用于排除近白色噪声像素。
+                        推荐值: 230~240。0 表示不启用。
 
     Returns:
         {"mask": np.uint8, "thr": dict, "pct": float}
@@ -123,6 +127,16 @@ def detect_tissue(
              (img[:, :, 1] > thr["G"]).astype(np.uint8) + \
              (img[:, :, 2] > thr["B"]).astype(np.uint8)
     mask = bright < 2
+
+    # 额外排除近白色像素：三通道均超过 max_brightness 的像素一定是背景
+    if max_brightness > 0:
+        near_white = (
+            (img[:, :, 0] > max_brightness)
+            & (img[:, :, 1] > max_brightness)
+            & (img[:, :, 2] > max_brightness)
+        )
+        mask[near_white] = False
+        del near_white
 
     se_close = _get_strel_disk(close_radius)
     se_open = _get_strel_disk(open_radius)

@@ -445,8 +445,8 @@ def _get_tissue_tile_set(
     thumb_ds_x = full_w / thumb_w
     thumb_ds_y = full_h / thumb_h
 
-    # 组织检测
-    result = detect_tissue(thumb)
+    # 组织检测（启用亮度上限排除近白色背景像素）
+    result = detect_tissue(thumb, max_brightness=230)
     tissue_mask = result["mask"]  # uint8, 0/255
 
     # 遍历所有 tile，映射到缩略图坐标，计算组织覆盖率
@@ -512,6 +512,18 @@ def _process_single_tile(
     if tile is None or tile.size == 0:
         return None, None
 
+    # ── 过滤白色/空白区域（非组织像素） ──
+    # 使用亮度 + 饱和度双重判定：亮且低饱和度 = 背景
+    ch_max_px = tile.max(axis=2)
+    ch_min_px = tile.min(axis=2)
+    gray = (ch_max_px.astype(np.int16) + ch_min_px.astype(np.int16)) >> 1
+    non_white = (gray < 220) | ((ch_max_px.astype(np.int16) - ch_min_px.astype(np.int16)) > 40)
+    del gray, ch_max_px, ch_min_px
+    non_white_count = int(non_white.sum())
+    if non_white_count < non_white.size * 0.05:
+        del tile, non_white
+        return None, None
+
     # ── 快速单通道反卷积（LUT + 点积） ──
     lut = _get_od_lut()
     od = lut[tile]  # (H, W, 3) float32 — 仅查表
@@ -539,6 +551,10 @@ def _process_single_tile(
     thr = int(estimated_otsu) if threshold_method == "otsu" else int(fixed_thr)
     _, binary = cv2.threshold(ch_norm, thr, 255, cv2.THRESH_BINARY)
     del ch_norm
+
+    # ── 去除白色/空白区域的阳性像素 ──
+    binary[~non_white] = 0
+    del non_white
 
     # ── 折叠区域过滤：DAB/(DAB+H) 比值 ──
     if h_od is not None and fold_ratio_threshold > 0:
@@ -810,7 +826,7 @@ def detect_ihc_hotspots_tiled(
         stage_callback("正在检测组织区域...")
     try:
         tissue_tile_set = _get_tissue_tile_set(
-            reader, level, tile_size, min_tissue_pct=0.1,
+            reader, level, tile_size, min_tissue_pct=0.2,
         )
         logger.info(
             "组织预检测: %d/%d 个 tile 含组织 (%.1f%%)",
@@ -1917,8 +1933,10 @@ class IHCHotspotDialog(QDialog):
         n_hs = len(result["hotspots"])
         if n_hs > 0:
             self._stage_lbl.setText(
-                f"扫描完成 — 检测到 {n_hs} 个热点，可直接点击「生成 ROI」或拖拽调整后再生成"
+                f"扫描完成 — 检测到 {n_hs} 个热点，已自动生成 ROI"
             )
+            # 自动生成 ROI，无需用户手动点击「生成 ROI」
+            QTimer.singleShot(0, self._on_generate_roi)
         else:
             self._stage_lbl.setText("扫描完成 — 未检测到热点，可尝试调整检测参数")
 
