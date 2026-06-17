@@ -96,6 +96,17 @@ class MockReader:
         h, w = image.shape[:2]
         self.levels = [_LevelInfo(w, h, downsample)]
         self.mpp = 0.5
+        # 生成缩略图（组织检测需要）
+        thumb_scale = max(1, max(w, h) // 512)
+        import cv2 as _cv2
+        self._thumbnail = _cv2.resize(
+            image, (w // thumb_scale, h // thumb_scale),
+            interpolation=_cv2.INTER_AREA,
+        )
+
+    @property
+    def thumbnail(self):
+        return self._thumbnail
 
     def _read_level_region(self, level, lx, ly, lw, lh):
         return self._image[ly:ly + lh, lx:lx + lw].copy()
@@ -146,6 +157,8 @@ for i, (x, y, w, h, d) in enumerate(result["hotspots"]):
 assert result["positive_pct"] > 0
 assert result["preview_image"].ndim == 3
 assert result["preview_ds"] <= result["analysis_ds"]  # 预览分辨率 ≥ mask
+assert result["tissue_tiles"] <= result["total_tiles"]
+print(f"  组织 tile: {result['tissue_tiles']}/{result['total_tiles']}")
 
 # 测试手动阈值模式
 result_manual = detect_ihc_hotspots_tiled(
@@ -269,5 +282,40 @@ acc_cancel, _, _, done_c, total_c = _accumulate_tiled(
 print(f"取消后处理 tile: {done_c}/{total_c}")
 assert done_c < total_c, f"取消应提前停止: done={done_c}, total={total_c}"
 print(f"提前停止成功: {done_c} < {total_c}")
+
+# ─── 测试 9: 组织预检测跳过背景 tile ───
+print("\n--- 组织预检测测试 ---")
+
+from liver_portal_crop.ihc_hotspot import _get_tissue_tile_set
+
+# 9a: 直接构造 tissue_tile_set 验证过滤逻辑
+# 使用现有 big_image（3000×2000），tile_size=1024 → 3×2 = 6 tiles
+# 只保留前 3 个 tile，模拟组织预检测跳过一半
+partial_tset = {(0, 0), (0, 1), (1, 0)}  # 3 out of 6
+
+acc_partial, _, _, done_part, total_part = _accumulate_tiled(
+    reader=mock, level=0, stain_type="H-DAB",
+    threshold_method="otsu", manual_threshold=0.3,
+    estimated_otsu=otsu_val, min_area=50,
+    tile_size=1024, analysis_ds=4, preview_ds=8,
+    tissue_tile_set=partial_tset,
+)
+print(f"组织过滤(3/6 tile): done={done_part}, total={total_part}")
+assert total_part == 3, f"应只处理 3 个组织 tile，实际 {total_part}"
+assert done_part == 3
+
+# 9b: 完整流程带 tissue_tile_set
+# 传入 None 时走自动组织检测
+result_auto = detect_ihc_hotspots_tiled(
+    reader=mock, level=0, stain_type="H-DAB",
+    threshold_method="otsu", min_area=50,
+    window_size=200, n_hotspots=5, min_density=0.01,
+    roi_w=200, roi_h=200, tile_size=1024,
+    analysis_ds=4, max_preview_dim=1024,
+)
+print(f"自动组织检测: tile {result_auto['tissue_tiles']}/{result_auto['total_tiles']}")
+assert "tissue_tiles" in result_auto
+assert "total_tiles" in result_auto
+assert result_auto["tissue_tiles"] <= result_auto["total_tiles"]
 
 print("\n=== 全部测试通过 ===")

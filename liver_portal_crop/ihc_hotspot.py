@@ -29,6 +29,8 @@ from skimage.color import (
     hax_from_rgb,
 )
 
+from liver_portal_crop.tissue_detect import detect_tissue
+
 logger = logging.getLogger(__name__)
 
 
@@ -412,6 +414,77 @@ def _sample_otsu_threshold(
     return float(np.median(thresholds))
 
 
+def _get_tissue_tile_set(
+    reader,
+    level: int,
+    tile_size: int,
+    min_tissue_pct: float = 0.1,
+) -> set[tuple[int, int]]:
+    """利用缩略图检测组织区域，返回含组织的 (row, col) tile 索引集合。
+
+    仅在含组织面积 > min_tissue_pct 的 tile 上做阳性检测，
+    跳过纯背景 tile 以大幅加速扫描。
+
+    Args:
+        reader: SDPCReader 实例
+        level: 扫描层级
+        tile_size: tile 尺寸（层级像素）
+        min_tissue_pct: 最低组织面积占比 (0~1)，低于此值的 tile 跳过
+
+    Returns:
+        {(row, col), ...} 含组织的 tile 索引集合
+    """
+    lv = reader.levels[level]
+    lv_w, lv_h = lv.width, lv.height
+    ds = lv.downsample
+
+    # 获取缩略图及其降采样因子
+    thumb = reader.thumbnail  # (H, W, 3) uint8
+    thumb_h, thumb_w = thumb.shape[:2]
+    full_w, full_h = lv_w * ds, lv_h * ds
+    thumb_ds_x = full_w / thumb_w
+    thumb_ds_y = full_h / thumb_h
+
+    # 组织检测
+    result = detect_tissue(thumb)
+    tissue_mask = result["mask"]  # uint8, 0/255
+
+    # 遍历所有 tile，映射到缩略图坐标，计算组织覆盖率
+    tiles_x = max(1, math.ceil(lv_w / tile_size))
+    tiles_y = max(1, math.ceil(lv_h / tile_size))
+
+    tissue_set: set[tuple[int, int]] = set()
+    for row in range(tiles_y):
+        for col in range(tiles_x):
+            # tile 在层级坐标 → level-0 坐标 → 缩略图坐标
+            lx0 = col * tile_size * ds
+            ly0 = row * tile_size * ds
+            lw0 = min(tile_size, lv_w - col * tile_size) * ds
+            lh0 = min(tile_size, lv_h - row * tile_size) * ds
+
+            tx = int(lx0 / thumb_ds_x)
+            ty = int(ly0 / thumb_ds_y)
+            tw = max(1, int(lw0 / thumb_ds_x))
+            th = max(1, int(lh0 / thumb_ds_y))
+
+            # 钳制到缩略图边界
+            tx = max(0, min(tx, thumb_w - 1))
+            ty = max(0, min(ty, thumb_h - 1))
+            tw = min(tw, thumb_w - tx)
+            th = min(th, thumb_h - ty)
+
+            if tw < 1 or th < 1:
+                continue
+
+            patch = tissue_mask[ty:ty + th, tx:tx + tw]
+            tissue_ratio = patch.mean() / 255.0
+
+            if tissue_ratio >= min_tissue_pct:
+                tissue_set.add((row, col))
+
+    return tissue_set
+
+
 def _process_single_tile(
     reader,
     level: int,
@@ -494,6 +567,7 @@ def _accumulate_tiled(
     preview_ds: int,
     fold_ratio_threshold: float = 0.0,
     n_workers: int = 1,
+    tissue_tile_set: set[tuple[int, int]] | None = None,
     cancel_callback: Callable[[], bool] | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
@@ -504,6 +578,7 @@ def _accumulate_tiled(
       - 只计算阳性单通道 float32（~50 MB/tile vs ~300 MB）
       - 去掉逐块形态学和连通域（改在全局降采样 mask 上统一做）
       - 支持多块并行处理（n_workers > 1）
+      - 组织预检测跳过纯背景 tile
 
     折叠过滤：
       - 计算 DAB/(DAB+H) 比值，折叠区域该比值低（H高DAB低）
@@ -534,22 +609,25 @@ def _accumulate_tiled(
 
     tiles_x = max(1, math.ceil(lv_w / tile_size))
     tiles_y = max(1, math.ceil(lv_h / tile_size))
-    total_tiles = tiles_x * tiles_y
     done = 0
 
     fixed_thr = 0.0
     if threshold_method == "manual":
         fixed_thr = manual_threshold * 255.0
 
-    # 生成所有 tile 坐标
+    # 生成 tile 坐标（如有组织预检测，仅保留含组织的 tile）
     tile_coords = []
     for row in range(tiles_y):
         for col in range(tiles_x):
+            if tissue_tile_set is not None and (row, col) not in tissue_tile_set:
+                continue
             lx = col * tile_size
             ly = row * tile_size
             lw = min(tile_size, lv_w - lx)
             lh = min(tile_size, lv_h - ly)
             tile_coords.append((lx, ly, lw, lh))
+
+    total_tiles = len(tile_coords)
 
     # 合并锁 — 保护 accumulated_mask 和 preview_canvas 的写入
     merge_lock = threading.Lock()
@@ -722,6 +800,27 @@ def detect_ihc_hotspots_tiled(
     # 确保 preview_ds 不大于 analysis_ds（预览分辨率 ≥ mask 分辨率）
     preview_ds = min(preview_ds, analysis_ds)
 
+    # ── 阶段 0：组织预检测 — 跳过纯背景 tile ──
+    tissue_tile_set: set[tuple[int, int]] | None = None
+    tiles_x = max(1, math.ceil(lv_w / tile_size))
+    tiles_y = max(1, math.ceil(lv_h / tile_size))
+    all_tiles = tiles_x * tiles_y
+
+    if stage_callback:
+        stage_callback("正在检测组织区域...")
+    try:
+        tissue_tile_set = _get_tissue_tile_set(
+            reader, level, tile_size, min_tissue_pct=0.1,
+        )
+        logger.info(
+            "组织预检测: %d/%d 个 tile 含组织 (%.1f%%)",
+            len(tissue_tile_set), all_tiles,
+            len(tissue_tile_set) / all_tiles * 100 if all_tiles else 0,
+        )
+    except Exception:
+        logger.warning("组织预检测失败，将处理全部 tile", exc_info=True)
+        tissue_tile_set = None
+
     # ── 阶段 1：估计 Otsu 阈值 ──
     estimated_otsu = 80.0
     if threshold_method == "otsu":
@@ -750,6 +849,7 @@ def detect_ihc_hotspots_tiled(
         preview_ds=preview_ds,
         fold_ratio_threshold=fold_ratio_threshold,
         n_workers=n_workers,
+        tissue_tile_set=tissue_tile_set,
         cancel_callback=cancel_callback,
         progress_callback=progress_callback,
     )
@@ -812,6 +912,8 @@ def detect_ihc_hotspots_tiled(
         "estimated_otsu": estimated_otsu,
         "lv_w":           lv_w,
         "lv_h":           lv_h,
+        "tissue_tiles":   len(tissue_tile_set) if tissue_tile_set is not None else all_tiles,
+        "total_tiles":    all_tiles,
     }
 
 
