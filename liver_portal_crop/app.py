@@ -30,6 +30,7 @@ from liver_portal_crop.navigator import NavigationWidget
 from liver_portal_crop.tissue_detect import (
     detect_tissue, tissue_regions_to_rois, tissue_regions_to_rois_grid, TissueDialog,
 )
+from liver_portal_crop.ihc_hotspot import IHCHotspotDialog
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
 from liver_portal_crop.preview_dialog import ROIPreviewDialog, ROIPreviewPanel
@@ -734,6 +735,13 @@ class MainWindow(QMainWindow):
         self._tissue_btn.clicked.connect(self._detect_tissue)
         analysis_layout.addWidget(self._tissue_btn)
 
+        self._ihc_hotspot_btn = QPushButton("IHC 热点检测")
+        self._ihc_hotspot_btn.setToolTip(
+            "自动识别免疫组化阳性区域密度最高的热点区域并生成 ROI"
+        )
+        self._ihc_hotspot_btn.clicked.connect(self._detect_ihc_hotspot)
+        analysis_layout.addWidget(self._ihc_hotspot_btn)
+
         self._deepliif_btn = QPushButton("DeepLIIF 分析")
         self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
         self._deepliif_btn.clicked.connect(self._on_deepliif_btn_clicked)
@@ -833,6 +841,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._theme_action)
 
         analysis_menu = menubar.addMenu("分析")
+        analysis_menu.addAction("IHC 热点检测...", self._detect_ihc_hotspot)
         analysis_menu.addAction("DeepLIIF 分析...", self._run_deepliif)
         analysis_menu.addSeparator()
         analysis_menu.addAction("设置模型路径...", self._set_deepliif_model_dir)
@@ -975,6 +984,7 @@ class MainWindow(QMainWindow):
             self._toolbar_stack.setCurrentIndex(0)
             self._left_panel.show()
             self._tissue_btn.show()
+            self._ihc_hotspot_btn.show()
             self._deepliif_btn.hide()
             self._clear_overlay_btn.hide()
             if hasattr(self, '_canvas_splitter_sizes'):
@@ -1001,6 +1011,7 @@ class MainWindow(QMainWindow):
             self._toolbar_stack.setCurrentIndex(1)
             self._left_panel.hide()
             self._tissue_btn.hide()
+            self._ihc_hotspot_btn.hide()
             self._deepliif_btn.show()
             if hasattr(self, '_preview_splitter_sizes'):
                 self._body.setSizes(self._preview_splitter_sizes)
@@ -1205,6 +1216,91 @@ class MainWindow(QMainWindow):
 
         self._refresh_roi_list()
         self._status_label.setText(f"组织检测: 共 {total_all} 个 ROI")
+
+    # ── IHC 热点检测 ────────────────────────────────────
+
+    def _detect_ihc_hotspot(self) -> None:
+        """IHC 阳性热点检测 → 在阳性密度最高处生成 ROI。
+
+        对话框内部完成后台扫描 + 检测，accept 后直接提取结果生成 ROI。
+        """
+        if not self._readers:
+            QMessageBox.information(self, "提示", "请先加载切片")
+            return
+
+        reader = self._readers.get(self._current_slide) or next(iter(self._readers.values()))
+        tile_w = self._frame_w_spin.value()
+        tile_h = self._frame_h_spin.value()
+
+        dlg = IHCHotspotDialog(
+            reader, tile_w, tile_h, self,
+            readers=self._readers,
+            current_slide=self._current_slide,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # 从对话框提取检测结果
+        result = dlg.get_last_result()
+        if result is None:
+            return
+
+        hotspots = result["hotspots"]
+        if not hotspots:
+            self._status_label.setText("IHC 热点检测: 未检测到热点")
+            return
+
+        params = dlg.get_params()
+        slide_path = self._current_slide
+
+        import uuid
+        created = 0
+        # 获取全分辨率尺寸，用于钳制坐标
+        full_w = getattr(reader, 'full_width', 0) or 0
+        full_h = getattr(reader, 'full_height', 0) or 0
+
+        for x, y, w, h, density in hotspots:
+            try:
+                x, y, w, h = int(x), int(y), int(w), int(h)
+                # 钳制坐标到图像范围
+                if full_w > 0 and full_h > 0:
+                    x = max(0, min(x, full_w - 1))
+                    y = max(0, min(y, full_h - 1))
+                    w = min(w, full_w - x)
+                    h = min(h, full_h - y)
+                if w < 1 or h < 1:
+                    continue
+                roi = ROIModel(
+                    slide_path=slide_path,
+                    x=x, y=y, w=w, h=h,
+                    id=uuid.uuid4().hex[:12],
+                )
+                self._roi_manager.add_roi(roi)
+                created += 1
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "创建 IHC ROI 失败 (%d,%d,%d,%d): %s", x, y, w, h, exc,
+                )
+
+        # 刷新画布
+        try:
+            self._canvas.clear_roi_rects()
+            if self._current_slide and self._current_slide in self._readers:
+                for roi in self._roi_manager.get_slide_rois(self._current_slide):
+                    self._canvas.add_roi_rect(
+                        roi.id,
+                        QRectF(roi.x, roi.y, roi.w, roi.h),
+                        angle=roi.angle,
+                    )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("刷新画布 ROI 失败: %s", exc)
+
+        self._refresh_roi_list()
+        self._status_label.setText(
+            f"IHC 热点检测: 共 {created} 个 ROI"
+        )
 
     # ── DeepLIIF 分析 ──────────────────────────────────
 
