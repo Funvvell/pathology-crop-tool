@@ -96,7 +96,8 @@ class ExportController(BaseController):
         path_input: dict[Path, str | "SDPCReader"] = {}
         for path in set(roi.slide_path for roi in rois):
             if path in self.readers:
-                path_input[path] = str(path)
+                # 直接传已打开的 reader 对象，避免 DLL 重复打开同一文件导致死锁
+                path_input[path] = self.readers[path]
 
         self.app._exporter = BatchExporter(self.app._crop_config)
         self.app._export_thread = QThread()
