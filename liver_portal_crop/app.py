@@ -858,9 +858,13 @@ class MainWindow(QMainWindow):
         help_menu = menubar.addMenu("帮助")
         help_menu.addAction("关于", lambda: QMessageBox.about(
             self, "关于",
-            "病理裁剪工具 v0.2\n\n"
-            "作者：Funvvell\n"
-            "SDPC 病理切片批量裁剪与导出",
+            "病理裁剪工具 v0.7.1\n\n"
+            "作者：Funvvell\n\n"
+            "功能：\n"
+            "• SDPC 病理切片浏览与 ROI 标注\n"
+            "• 汇管区自动检测与批量裁剪导出\n"
+            "• IHC 阳性热点检测与 ROI 自动生成\n"
+            "• DeepLIIF 免疫组化分析",
         ))
 
     def _apply_theme(self, name: str) -> None:
