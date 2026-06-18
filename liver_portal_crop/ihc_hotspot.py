@@ -2037,38 +2037,43 @@ class IHCHotspotDialog(QDialog):
           热点在 level-0 空间 → 预览空间 = / preview_ds
           反向：预览空间 → level-0 = × preview_ds
         """
-        preview_ds = self._preview_ds
+        try:
+            preview_ds = self._preview_ds
 
-        roi_rects_preview = self._preview_view.get_roi_rects()
+            roi_rects_preview = self._preview_view.get_roi_rects()
 
-        # 回退：如果预览图上没有编辑过的 ROI，使用原始检测结果
-        if not roi_rects_preview and self._last_result is not None:
-            hotspots = self._last_result.get("hotspots", [])
-            if hotspots:
-                self._stage_lbl.setText(f"已生成 {len(hotspots)} 个 ROI")
-                self.accept()
+            # 回退：如果预览图上没有编辑过的 ROI，使用原始检测结果
+            if not roi_rects_preview and self._last_result is not None:
+                hotspots = self._last_result.get("hotspots", [])
+                if hotspots:
+                    self._stage_lbl.setText(f"已生成 {len(hotspots)} 个 ROI")
+                    QTimer.singleShot(0, self.accept)
+                    return
+
+            if not roi_rects_preview:
+                self._info_lbl.setText("没有 ROI — 请先完成扫描检测热点")
                 return
 
-        if not roi_rects_preview:
-            self._info_lbl.setText("没有 ROI — 请先完成扫描检测热点")
-            return
+            # 预览坐标 → level-0 坐标
+            hotspots_level0 = []
+            for rect in roi_rects_preview:
+                x0 = max(0, int(rect.left() * preview_ds))
+                y0 = max(0, int(rect.top() * preview_ds))
+                w0 = max(1, int(rect.width() * preview_ds))
+                h0 = max(1, int(rect.height() * preview_ds))
+                hotspots_level0.append((x0, y0, w0, h0, 0.0))
 
-        # 预览坐标 → level-0 坐标
-        hotspots_level0 = []
-        for rect in roi_rects_preview:
-            x0 = max(0, int(rect.left() * preview_ds))
-            y0 = max(0, int(rect.top() * preview_ds))
-            w0 = max(1, int(rect.width() * preview_ds))
-            h0 = max(1, int(rect.height() * preview_ds))
-            hotspots_level0.append((x0, y0, w0, h0, 0.0))
+            if self._last_result is not None:
+                self._last_result["hotspots"] = hotspots_level0
+            else:
+                self._last_result = {"hotspots": hotspots_level0}
 
-        if self._last_result is not None:
-            self._last_result["hotspots"] = hotspots_level0
-        else:
-            self._last_result = {"hotspots": hotspots_level0}
-
-        self._stage_lbl.setText(f"已生成 {len(hotspots_level0)} 个 ROI")
-        self.accept()
+            self._stage_lbl.setText(f"已生成 {len(hotspots_level0)} 个 ROI")
+            # 延迟关闭对话框，避免在信号处理栈内触发 closeEvent 导致崩溃
+            QTimer.singleShot(0, self.accept)
+        except Exception as exc:
+            logger.error("生成 ROI 失败: %s", exc, exc_info=True)
+            self._info_lbl.setText(f"生成 ROI 失败: {exc}")
 
     def _on_scan_error(self, msg: str):
         self._scan_progress.setVisible(False)
@@ -2078,7 +2083,7 @@ class IHCHotspotDialog(QDialog):
 
     def _on_cancel(self):
         self._stop_worker_thread()
-        self.reject()
+        QTimer.singleShot(0, self.reject)
 
     def _stop_worker_thread(self):
         """安全停止后台工作线程，确保线程完全退出后再继续。"""
