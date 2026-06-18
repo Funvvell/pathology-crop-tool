@@ -977,24 +977,6 @@ def detect_ihc_hotspots_tiled(
         n_hotspots, min_density,
     )
 
-    # ── 阶段 4：将热点 ROI 扩展到组织连通区域 ──
-    if hotspots:
-        try:
-            thumb = reader.thumbnail
-            thumb_h_px, thumb_w_px = thumb.shape[:2]
-            full_w_l0 = lv_w * ds
-            full_h_l0 = lv_h * ds
-            # 缩略图 → level-0 比例（取均值）
-            thumb_to_l0 = (full_w_l0 / thumb_w_px + full_h_l0 / thumb_h_px) / 2.0
-            tissue_result = detect_tissue(thumb, max_brightness=230)
-            hotspots = _fit_hotspots_to_tissue(
-                hotspots, tissue_result["mask"], thumb_to_l0,
-                full_w_l0, full_h_l0,
-            )
-            logger.info("热点已适配组织区域: %d 个", len(hotspots))
-        except Exception:
-            logger.warning("热点适配组织区域失败，使用原始 ROI 尺寸", exc_info=True)
-
     pos_pct = float(
         (accumulated_mask > 0).sum() / accumulated_mask.size * 100
     )
