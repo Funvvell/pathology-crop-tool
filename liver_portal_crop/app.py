@@ -1220,10 +1220,7 @@ class MainWindow(QMainWindow):
     # ── IHC 热点检测 ────────────────────────────────────
 
     def _detect_ihc_hotspot(self) -> None:
-        """IHC 阳性热点检测 → 在阳性密度最高处生成 ROI。
-
-        对话框内部完成后台扫描 + 检测，accept 后直接提取结果生成 ROI。
-        """
+        """IHC 阳性热点检测 → 通过回调直接添加 ROI 到画布。"""
         if not self._readers:
             QMessageBox.information(self, "提示", "请先加载切片")
             return
@@ -1231,76 +1228,62 @@ class MainWindow(QMainWindow):
         reader = self._readers.get(self._current_slide) or next(iter(self._readers.values()))
         tile_w = self._frame_w_spin.value()
         tile_h = self._frame_h_spin.value()
+        slide_path = self._current_slide
+
+        full_w = getattr(reader, 'full_width', 0) or 0
+        full_h = getattr(reader, 'full_height', 0) or 0
+
+        def _add_rois_to_canvas(roi_list: list[tuple[int, int, int, int]]) -> None:
+            """回调：将 [(x, y, w, h), ...] 直接添加到 ROI 管理器 + 画布。"""
+            import uuid
+            created = 0
+            for x, y, w, h in roi_list:
+                try:
+                    x, y, w, h = int(x), int(y), int(w), int(h)
+                    if full_w > 0 and full_h > 0:
+                        x = max(0, min(x, full_w - 1))
+                        y = max(0, min(y, full_h - 1))
+                        w = min(w, full_w - x)
+                        h = min(h, full_h - y)
+                    if w < 1 or h < 1:
+                        continue
+                    roi = ROIModel(
+                        slide_path=slide_path,
+                        x=x, y=y, w=w, h=h,
+                        id=uuid.uuid4().hex[:12],
+                    )
+                    self._roi_manager.add_roi(roi)
+                    created += 1
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "创建 IHC ROI 失败 (%d,%d,%d,%d): %s", x, y, w, h, exc,
+                    )
+
+            # 刷新画布
+            try:
+                self._canvas.clear_roi_rects()
+                if slide_path and slide_path in self._readers:
+                    for roi in self._roi_manager.get_slide_rois(slide_path):
+                        self._canvas.add_roi_rect(
+                            roi.id,
+                            QRectF(roi.x, roi.y, roi.w, roi.h),
+                            angle=roi.angle,
+                        )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("刷新画布 ROI 失败: %s", exc)
+
+            self._refresh_roi_list()
+            self._status_label.setText(f"IHC 热点检测: 共 {created} 个 ROI")
 
         dlg = IHCHotspotDialog(
             reader, tile_w, tile_h, self,
             readers=self._readers,
             current_slide=self._current_slide,
+            roi_callback=_add_rois_to_canvas,
         )
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        # 从对话框提取检测结果
-        result = dlg.get_last_result()
-        if result is None:
-            return
-
-        hotspots = result["hotspots"]
-        if not hotspots:
-            self._status_label.setText("IHC 热点检测: 未检测到热点")
-            return
-
-        params = dlg.get_params()
-        slide_path = self._current_slide
-
-        import uuid
-        created = 0
-        # 获取全分辨率尺寸，用于钳制坐标
-        full_w = getattr(reader, 'full_width', 0) or 0
-        full_h = getattr(reader, 'full_height', 0) or 0
-
-        for x, y, w, h, density in hotspots:
-            try:
-                x, y, w, h = int(x), int(y), int(w), int(h)
-                # 钳制坐标到图像范围
-                if full_w > 0 and full_h > 0:
-                    x = max(0, min(x, full_w - 1))
-                    y = max(0, min(y, full_h - 1))
-                    w = min(w, full_w - x)
-                    h = min(h, full_h - y)
-                if w < 1 or h < 1:
-                    continue
-                roi = ROIModel(
-                    slide_path=slide_path,
-                    x=x, y=y, w=w, h=h,
-                    id=uuid.uuid4().hex[:12],
-                )
-                self._roi_manager.add_roi(roi)
-                created += 1
-            except Exception as exc:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "创建 IHC ROI 失败 (%d,%d,%d,%d): %s", x, y, w, h, exc,
-                )
-
-        # 刷新画布
-        try:
-            self._canvas.clear_roi_rects()
-            if self._current_slide and self._current_slide in self._readers:
-                for roi in self._roi_manager.get_slide_rois(self._current_slide):
-                    self._canvas.add_roi_rect(
-                        roi.id,
-                        QRectF(roi.x, roi.y, roi.w, roi.h),
-                        angle=roi.angle,
-                    )
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("刷新画布 ROI 失败: %s", exc)
-
-        self._refresh_roi_list()
-        self._status_label.setText(
-            f"IHC 热点检测: 共 {created} 个 ROI"
-        )
+        dlg.exec()
 
     # ── DeepLIIF 分析 ──────────────────────────────────
 

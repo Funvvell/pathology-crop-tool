@@ -1544,6 +1544,7 @@ class IHCHotspotDialog(QDialog):
         parent=None,
         readers: dict | None = None,
         current_slide=None,
+        roi_callback: Callable[[list[tuple[int, int, int, int]]], None] | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("IHC 热点检测")
@@ -1556,6 +1557,8 @@ class IHCHotspotDialog(QDialog):
         self._mpp = reader.mpp or 0.0
         self._readers = readers or {}
         self._current_slide = current_slide
+        # 外部回调：接收 [(x, y, w, h), ...] 直接添加到画布
+        self._roi_callback = roi_callback
 
         # 检测结果缓存
         self._preview_image: np.ndarray | None = None
@@ -2031,12 +2034,7 @@ class IHCHotspotDialog(QDialog):
             self._preview_view._roi_items.remove(item)
 
     def _on_generate_roi(self):
-        """生成 ROI — 从预览图上的交互式矩形取坐标，转换到 level-0 空间。
-
-        坐标转换：
-          热点在 level-0 空间 → 预览空间 = / preview_ds
-          反向：预览空间 → level-0 = × preview_ds
-        """
+        """生成 ROI — 通过回调直接映射到画布，不关闭对话框。"""
         preview_ds = self._preview_ds
 
         roi_rects_preview = self._preview_view.get_roi_rects()
@@ -2045,8 +2043,10 @@ class IHCHotspotDialog(QDialog):
         if not roi_rects_preview and self._last_result is not None:
             hotspots = self._last_result.get("hotspots", [])
             if hotspots:
-                self._stage_lbl.setText(f"已生成 {len(hotspots)} 个 ROI")
-                self.accept()
+                roi_list = [(int(x), int(y), int(w), int(h)) for x, y, w, h, _ in hotspots]
+                if self._roi_callback:
+                    self._roi_callback(roi_list)
+                self._stage_lbl.setText(f"已生成 {len(roi_list)} 个 ROI 到画布")
                 return
 
         if not roi_rects_preview:
@@ -2054,21 +2054,17 @@ class IHCHotspotDialog(QDialog):
             return
 
         # 预览坐标 → level-0 坐标
-        hotspots_level0 = []
+        roi_list = []
         for rect in roi_rects_preview:
             x0 = max(0, int(rect.left() * preview_ds))
             y0 = max(0, int(rect.top() * preview_ds))
             w0 = max(1, int(rect.width() * preview_ds))
             h0 = max(1, int(rect.height() * preview_ds))
-            hotspots_level0.append((x0, y0, w0, h0, 0.0))
+            roi_list.append((x0, y0, w0, h0))
 
-        if self._last_result is not None:
-            self._last_result["hotspots"] = hotspots_level0
-        else:
-            self._last_result = {"hotspots": hotspots_level0}
-
-        self._stage_lbl.setText(f"已生成 {len(hotspots_level0)} 个 ROI")
-        self.accept()
+        if self._roi_callback:
+            self._roi_callback(roi_list)
+        self._stage_lbl.setText(f"已生成 {len(roi_list)} 个 ROI 到画布")
 
     def _on_scan_error(self, msg: str):
         self._scan_progress.setVisible(False)
