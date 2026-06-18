@@ -27,6 +27,7 @@ from liver_portal_crop.ihc_hotspot import (
     _accumulate_tiled,
     _get_h_weights,
     _process_single_tile,
+    _fit_hotspots_to_tissue,
     STAIN_LABELS,
 )
 
@@ -383,5 +384,48 @@ if result_white["hotspots"]:
         # 即 level-0 坐标 (1600-3200) 附近
         assert cx < 5000, f"热点 #{i+1} x={cx} 远离组织区域"
         assert cy < 5000, f"热点 #{i+1} y={cy} 远离组织区域"
+
+# ─── 测试 11: 热点 ROI 自适应组织区域尺寸 ───
+print("\n--- 热点适配组织区域测试 ---")
+
+# 创建合成组织 mask（缩略图尺寸 200x300）
+# 一个大的连通区域: 缩略图 (30,30)-(150,180)，对应 level-0 (300,300)-(1500,1800)
+tissue_mask = np.zeros((200, 300), dtype=np.uint8)
+tissue_mask[30:150, 30:180] = 255  # 大组织区域
+
+# 固定尺寸热点（在组织区域内）
+hotspots_fixed = [
+    (600, 600, 200, 200, 0.8),   # 中心在组织区域内
+    (1000, 1000, 200, 200, 0.5), # 中心在组织区域内
+]
+
+# thumb_to_level0 = 10 (缩略图 200x300 → level-0 2000x3000)
+fitted = _fit_hotspots_to_tissue(
+    hotspots_fixed, tissue_mask, thumb_to_level0=10.0,
+    level0_w=3000, level0_h=2000,
+)
+
+print(f"固定尺寸热点: {len(hotspots_fixed)} 个")
+for i, (x, y, w, h, d) in enumerate(hotspots_fixed):
+    print(f"  #{i+1}: ({x},{y}) {w}x{h} density={d:.1%}")
+
+print(f"适配组织后: {len(fitted)} 个")
+for i, (x, y, w, h, d) in enumerate(fitted):
+    print(f"  #{i+1}: ({x},{y}) {w}x{h} density={d:.1%}")
+    # ROI 应覆盖整个组织区域 (300,300)-(1500,1800)
+    assert x <= 350, f"ROI x={x} 应接近组织区域左边界 300"
+    assert y <= 350, f"ROI y={y} 应接近组织区域上边界 300"
+    assert w >= 1100, f"ROI w={w} 应接近组织区域宽度 ~1200"
+    assert h >= 1100, f"ROI h={h} 应接近组织区域高度 ~1200"
+
+# 不在组织区域内的热点应保持原始尺寸
+hotspots_outside = [(2500, 1800, 200, 200, 0.3)]
+fitted_outside = _fit_hotspots_to_tissue(
+    hotspots_outside, tissue_mask, thumb_to_level0=10.0,
+    level0_w=3000, level0_h=2000,
+)
+x_o, y_o, w_o, h_o, d_o = fitted_outside[0]
+assert w_o == 200 and h_o == 200, f"组织外热点应保持原始尺寸: ({w_o},{h_o})"
+print(f"组织外热点保持原始尺寸: ({w_o},{h_o}) OK")
 
 print("\n=== 全部测试通过 ===")
