@@ -1283,7 +1283,8 @@ class MainWindow(QMainWindow):
             current_slide=self._current_slide,
             roi_callback=_add_rois_to_canvas,
         )
-        dlg.exec()
+        self._ihc_dlg = dlg  # 保持引用防止 GC
+        dlg.show()
 
     # ── DeepLIIF 分析 ──────────────────────────────────
 
