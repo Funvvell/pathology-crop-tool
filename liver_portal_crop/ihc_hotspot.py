@@ -13,7 +13,12 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
+
+# 启用 faulthandler 捕获段错误堆栈
+_faulthandler_file = open("ihc_faulthandler.log", "w", encoding="utf-8")
+faulthandler.enable(file=_faulthandler_file)
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2037,21 +2042,32 @@ class IHCHotspotDialog(QDialog):
           热点在 level-0 空间 → 预览空间 = / preview_ds
           反向：预览空间 → level-0 = × preview_ds
         """
+        import traceback as _tb
+        _dbg = open("ihc_debug.log", "a", encoding="utf-8")
+        def _log(msg):
+            _dbg.write(f"[gen_roi] {msg}\n"); _dbg.flush()
         try:
+            _log("start")
             preview_ds = self._preview_ds
+            _log(f"preview_ds={preview_ds}")
 
             roi_rects_preview = self._preview_view.get_roi_rects()
+            _log(f"roi_rects={len(roi_rects_preview)}")
 
             # 回退：如果预览图上没有编辑过的 ROI，使用原始检测结果
             if not roi_rects_preview and self._last_result is not None:
                 hotspots = self._last_result.get("hotspots", [])
+                _log(f"fallback hotspots={len(hotspots)}")
                 if hotspots:
                     self._stage_lbl.setText(f"已生成 {len(hotspots)} 个 ROI")
-                    QTimer.singleShot(0, self.accept)
+                    _log("calling accept via fallback")
+                    self.accept()
+                    _log("accept returned")
                     return
 
             if not roi_rects_preview:
                 self._info_lbl.setText("没有 ROI — 请先完成扫描检测热点")
+                _log("no roi, returning")
                 return
 
             # 预览坐标 → level-0 坐标
@@ -2069,11 +2085,15 @@ class IHCHotspotDialog(QDialog):
                 self._last_result = {"hotspots": hotspots_level0}
 
             self._stage_lbl.setText(f"已生成 {len(hotspots_level0)} 个 ROI")
-            # 延迟关闭对话框，避免在信号处理栈内触发 closeEvent 导致崩溃
-            QTimer.singleShot(0, self.accept)
+            _log(f"calling accept, {len(hotspots_level0)} ROIs")
+            self.accept()
+            _log("accept returned OK")
         except Exception as exc:
+            _log(f"EXCEPTION: {exc}\n{_tb.format_exc()}")
             logger.error("生成 ROI 失败: %s", exc, exc_info=True)
             self._info_lbl.setText(f"生成 ROI 失败: {exc}")
+        finally:
+            _dbg.close()
 
     def _on_scan_error(self, msg: str):
         self._scan_progress.setVisible(False)
@@ -2087,26 +2107,39 @@ class IHCHotspotDialog(QDialog):
 
     def _stop_worker_thread(self):
         """安全停止后台工作线程，确保线程完全退出后再继续。"""
-        if self._thread is None or not self._thread.isRunning():
-            return
+        import traceback as _tb
+        _dbg = open("ihc_debug.log", "a", encoding="utf-8")
+        def _log(msg):
+            _dbg.write(f"[stop_thread] {msg}\n"); _dbg.flush()
         try:
-            self._worker.stage.disconnect()
-            self._worker.progress.disconnect()
-            self._worker.finished.disconnect()
-            self._worker.error.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-        self._worker.cancel()
-        # 轮询等待线程退出，保持事件循环响应
-        for _ in range(20):  # 最多等 10 秒
-            self._thread.quit()
-            if self._thread.wait(500):
-                break
-        else:
-            # 超时强制终止（最后手段）
-            logger.warning("工作线程未响应，强制终止")
-            self._thread.terminate()
-            self._thread.wait(2000)
+            if self._thread is None or not self._thread.isRunning():
+                _log("thread not running, skip")
+                return
+            _log("disconnecting signals...")
+            try:
+                self._worker.stage.disconnect()
+                self._worker.progress.disconnect()
+                self._worker.finished.disconnect()
+                self._worker.error.disconnect()
+                _log("signals disconnected")
+            except (RuntimeError, TypeError) as e:
+                _log(f"disconnect error (ok): {e}")
+            self._worker.cancel()
+            _log("cancelling worker, polling thread exit...")
+            for i in range(20):
+                self._thread.quit()
+                if self._thread.wait(500):
+                    _log(f"thread exited at poll {i}")
+                    break
+            else:
+                _log("thread not responding, terminating")
+                self._thread.terminate()
+                self._thread.wait(2000)
+            _log("stop_worker_thread done")
+        except Exception as e:
+            _log(f"EXCEPTION: {e}\n{_tb.format_exc()}")
+        finally:
+            _dbg.close()
 
     # ────────────────────────────────────────────────────────
     #  公共接口
@@ -2137,5 +2170,9 @@ class IHCHotspotDialog(QDialog):
         return self._last_result
 
     def closeEvent(self, event):
+        _dbg = open("ihc_debug.log", "a", encoding="utf-8")
+        _dbg.write("[closeEvent] enter\n"); _dbg.flush()
         self._stop_worker_thread()
+        _dbg.write("[closeEvent] calling super\n"); _dbg.flush()
         super().closeEvent(event)
+        _dbg.write("[closeEvent] done\n"); _dbg.close()
