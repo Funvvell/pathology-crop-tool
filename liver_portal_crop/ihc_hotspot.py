@@ -1550,6 +1550,10 @@ class IHCHotspotDialog(QDialog):
         self.setWindowTitle("IHC 热点检测")
         self.setMinimumSize(800, 600)
         self.resize(960, 680)
+        # 设为独立窗口，点击时自动激活到前台
+        self.setWindowFlags(Qt.WindowType.Window
+                            | Qt.WindowType.WindowCloseButtonHint
+                            | Qt.WindowType.WindowMinimizeButtonHint)
 
         self._reader = reader
         self._tile_w = tile_w
