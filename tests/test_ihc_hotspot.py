@@ -431,12 +431,13 @@ print(f"组织外热点保持原始尺寸: ({w_o},{h_o}) OK")
 
 print("\n--- 组织覆盖率过滤测试 ---")
 
-# 12a: 构造组织 mask，部分热点在组织上，部分不在
-mask_l0 = np.zeros((2000, 3000), dtype=np.uint8)
+# 12a: 构造缩略图尺寸的组织 mask，部分热点在组织上，部分不在
+# 使用 thumb_to_level0=1.0 模拟缩略图与 level-0 同尺寸
+mask_thumb = np.zeros((2000, 3000), dtype=np.uint8)
 # 左侧大块组织
-mask_l0[200:1800, 100:1400] = 1
+mask_thumb[200:1800, 100:1400] = 1
 # 右上小块组织
-mask_l0[100:500, 2000:2600] = 1
+mask_thumb[100:500, 2000:2600] = 1
 
 # 热点1: 在左侧组织上 (覆盖率高)
 # 热点2: 在右上组织上 (覆盖率高)
@@ -449,23 +450,39 @@ hotspots_cov = [
     (1300, 300, 400, 400, 0.6),   # 组织边缘，约25%覆盖率
 ]
 
-filtered_cov = _filter_hotspots_by_tissue_coverage(hotspots_cov, mask_l0, min_tissue_pct=0.5)
+filtered_cov = _filter_hotspots_by_tissue_coverage(
+    hotspots_cov, mask_thumb, thumb_to_level0=1.0, min_tissue_pct=0.5,
+)
 print(f"覆盖率过滤: {len(hotspots_cov)} -> {len(filtered_cov)} 个热点")
 assert len(filtered_cov) == 2, f"应保留 2 个高覆盖率热点，实际 {len(filtered_cov)}"
 assert filtered_cov[0][4] == 0.9
 assert filtered_cov[1][4] == 0.8
 
 # 12b: 空列表
-filtered_empty = _filter_hotspots_by_tissue_coverage([], mask_l0, min_tissue_pct=0.5)
+filtered_empty = _filter_hotspots_by_tissue_coverage(
+    [], mask_thumb, thumb_to_level0=1.0, min_tissue_pct=0.5,
+)
 assert filtered_empty == []
 
-# 12c: tissue_mask_l0 = None 时不过滤
-filtered_none = _filter_hotspots_by_tissue_coverage(hotspots_cov, None, min_tissue_pct=0.5)
+# 12c: mask = None 时不过滤
+filtered_none = _filter_hotspots_by_tissue_coverage(
+    hotspots_cov, None, thumb_to_level0=1.0, min_tissue_pct=0.5,
+)
 assert len(filtered_none) == 4, "mask=None 时不应过滤"
 
-# 12d: 检测流程集成 — 验证 tissue_mask_l0 在结果中
-assert "tissue_mask_l0" in result_auto, "结果中应包含 tissue_mask_l0"
-print(f"tissue_mask_l0 类型: {type(result_auto['tissue_mask_l0'])}")
+# 12d: 缩放坐标映射 — thumb_to_level0=10 时，热点坐标自动缩小10倍再查 mask
+mask_small = np.zeros((200, 300), dtype=np.uint8)
+mask_small[20:180, 10:140] = 1   # 缩小 10 倍后的左侧组织
+filtered_scaled = _filter_hotspots_by_tissue_coverage(
+    [(200, 300, 400, 400, 0.9), (1500, 1000, 400, 400, 0.7)],
+    mask_small, thumb_to_level0=10.0, min_tissue_pct=0.5,
+)
+assert len(filtered_scaled) == 1, f"缩放映射: 应保留 1 个热点，实际 {len(filtered_scaled)}"
+
+# 12e: 检测流程集成 — 验证 tissue_mask_thumb 在结果中
+assert "tissue_mask_thumb" in result_auto, "结果中应包含 tissue_mask_thumb"
+assert "thumb_to_level0" in result_auto, "结果中应包含 thumb_to_level0"
+print(f"tissue_mask_thumb 类型: {type(result_auto['tissue_mask_thumb'])}")
 
 print("组织覆盖率过滤: OK")
 

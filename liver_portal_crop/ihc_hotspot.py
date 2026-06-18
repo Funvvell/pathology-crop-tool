@@ -364,36 +364,45 @@ def _fit_hotspots_to_tissue(
 
 def _filter_hotspots_by_tissue_coverage(
     hotspots: list[tuple[int, int, int, int, float]],
-    tissue_mask_l0: np.ndarray,
+    tissue_mask_thumb: np.ndarray,
+    thumb_to_level0: float,
     min_tissue_pct: float = 0.5,
 ) -> list[tuple[int, int, int, int, float]]:
     """过滤掉组织覆盖率不足的热点。
 
     Args:
         hotspots: [(x, y, w, h, density), ...] level-0 坐标
-        tissue_mask_l0: level-0 尺寸的组织二值 mask (uint8, 0/1)
+        tissue_mask_thumb: 缩略图尺寸的组织二值 mask (uint8, 0/1)
+        thumb_to_level0: 缩略图 → level-0 缩放因子
         min_tissue_pct: 最低组织覆盖率 (0~1)，默认 0.5
 
     Returns:
         满足组织覆盖率要求的热点列表
     """
-    if not hotspots or tissue_mask_l0 is None:
+    if not hotspots or tissue_mask_thumb is None:
         return hotspots
 
-    mask_h, mask_w = tissue_mask_l0.shape
+    mask_h, mask_w = tissue_mask_thumb.shape
+    inv_scale = 1.0 / thumb_to_level0
     filtered: list[tuple[int, int, int, int, float]] = []
 
     for x, y, w, h, d in hotspots:
-        # 钳制到 mask 边界
-        mx = max(0, min(x, mask_w - 1))
-        my = max(0, min(y, mask_h - 1))
-        mw = min(w, mask_w - mx)
-        mh = min(h, mask_h - my)
+        # level-0 坐标 → 缩略图坐标
+        tx = int(x * inv_scale)
+        ty = int(y * inv_scale)
+        tw = max(1, int(w * inv_scale))
+        th = max(1, int(h * inv_scale))
 
-        if mw < 1 or mh < 1:
+        # 钳制到 mask 边界
+        tx = max(0, min(tx, mask_w - 1))
+        ty = max(0, min(ty, mask_h - 1))
+        tw = min(tw, mask_w - tx)
+        th = min(th, mask_h - ty)
+
+        if tw < 1 or th < 1:
             continue
 
-        patch = tissue_mask_l0[my:my + mh, mx:mx + mw]
+        patch = tissue_mask_thumb[ty:ty + th, tx:tx + tw]
         tissue_ratio = float(patch.mean())  # mask 是 0/1，mean 即为覆盖率
 
         if tissue_ratio >= min_tissue_pct:
@@ -537,9 +546,9 @@ def _get_tissue_tile_set(
         min_tissue_pct: 最低组织面积占比 (0~1)，低于此值的 tile 跳过
 
     Returns:
-        (tissue_set, tissue_mask_l0, thumb_to_level0)
+        (tissue_set, tissue_mask_thumb, thumb_to_level0)
         tissue_set:       {(row, col), ...} 含组织的 tile 索引集合
-        tissue_mask_l0:   level-0 尺寸的组织二值 mask (uint8, 0/1)
+        tissue_mask_thumb: 缩略图尺寸的组织二值 mask (uint8, 0/1)
         thumb_to_level0:  缩略图 → level-0 缩放因子
     """
     lv = reader.levels[level]
@@ -557,12 +566,8 @@ def _get_tissue_tile_set(
     result = detect_tissue(thumb, max_brightness=230)
     tissue_mask = result["mask"]  # uint8, 0/255
 
-    # 将组织 mask 上采样到 level-0 分辨率（用于热点组织覆盖率检查）
-    tissue_mask_l0 = cv2.resize(
-        (tissue_mask > 0).astype(np.uint8),
-        (int(full_w), int(full_h)),
-        interpolation=cv2.INTER_NEAREST,
-    )
+    # 缩略图尺寸的组织二值 mask（用于热点组织覆盖率检查，避免全分辨率内存开销）
+    tissue_mask_thumb = (tissue_mask > 0).astype(np.uint8)
 
     # 遍历所有 tile，映射到缩略图坐标，计算组织覆盖率
     tiles_x = max(1, math.ceil(lv_w / tile_size))
@@ -597,7 +602,7 @@ def _get_tissue_tile_set(
             if tissue_ratio >= min_tissue_pct:
                 tissue_set.add((row, col))
 
-    return tissue_set, tissue_mask_l0, float(thumb_ds_x)
+    return tissue_set, tissue_mask_thumb, float(thumb_ds_x)
 
 
 def _process_single_tile(
@@ -933,7 +938,8 @@ def detect_ihc_hotspots_tiled(
 
     # ── 阶段 0：组织预检测 — 跳过纯背景 tile ──
     tissue_tile_set: set[tuple[int, int]] | None = None
-    tissue_mask_l0: np.ndarray | None = None
+    tissue_mask_thumb: np.ndarray | None = None
+    thumb_to_level0: float = 1.0
     tiles_x = max(1, math.ceil(lv_w / tile_size))
     tiles_y = max(1, math.ceil(lv_h / tile_size))
     all_tiles = tiles_x * tiles_y
@@ -941,7 +947,7 @@ def detect_ihc_hotspots_tiled(
     if stage_callback:
         stage_callback("正在检测组织区域...")
     try:
-        tissue_tile_set, tissue_mask_l0, _thumb_ds = _get_tissue_tile_set(
+        tissue_tile_set, tissue_mask_thumb, thumb_to_level0 = _get_tissue_tile_set(
             reader, level, tile_size, min_tissue_pct=0.2,
         )
         logger.info(
@@ -952,7 +958,7 @@ def detect_ihc_hotspots_tiled(
     except Exception:
         logger.warning("组织预检测失败，将处理全部 tile", exc_info=True)
         tissue_tile_set = None
-        tissue_mask_l0 = None
+        tissue_mask_thumb = None
 
     # ── 阶段 1：估计 Otsu 阈值 ──
     estimated_otsu = 80.0
@@ -1030,10 +1036,11 @@ def detect_ihc_hotspots_tiled(
     )
 
     # ── 阶段 4：组织覆盖率过滤 — 去除背景面积 > 50% 的热点 ──
-    if tissue_mask_l0 is not None and hotspots:
+    if tissue_mask_thumb is not None and hotspots:
         before = len(hotspots)
         hotspots = _filter_hotspots_by_tissue_coverage(
-            hotspots, tissue_mask_l0, min_tissue_pct=0.5,
+            hotspots, tissue_mask_thumb, thumb_to_level0,
+            min_tissue_pct=0.5,
         )
         if before != len(hotspots):
             logger.info(
@@ -1057,7 +1064,8 @@ def detect_ihc_hotspots_tiled(
         "estimated_otsu": estimated_otsu,
         "lv_w":           lv_w,
         "lv_h":           lv_h,
-        "tissue_mask_l0": tissue_mask_l0,
+        "tissue_mask_thumb": tissue_mask_thumb,
+        "thumb_to_level0":   thumb_to_level0,
         "tissue_tiles":   len(tissue_tile_set) if tissue_tile_set is not None else all_tiles,
         "total_tiles":    all_tiles,
     }
@@ -1965,6 +1973,18 @@ class IHCHotspotDialog(QDialog):
         if self._thread is not None and self._thread.isRunning():
             return  # 已经在运行
 
+        # 清理上一次扫描的信号连接，防止重复触发
+        if self._worker is not None:
+            try:
+                self._worker.stage.disconnect()
+                self._worker.progress.disconnect()
+                self._worker.finished.disconnect()
+                self._worker.error.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        if self._thread is not None:
+            self._thread.wait(1000)
+
         # 重置绘制模式
         self._draw_btn.setChecked(False)
         self._preview_view.set_draw_mode(False)
@@ -2109,9 +2129,11 @@ class IHCHotspotDialog(QDialog):
         roi_rects_preview = self._preview_view.get_roi_rects()
 
         # 获取组织 mask（用于过滤背景面积过大的 ROI）
-        tissue_mask_l0 = None
+        tissue_mask_thumb = None
+        thumb_to_level0 = 1.0
         if self._last_result is not None:
-            tissue_mask_l0 = self._last_result.get("tissue_mask_l0")
+            tissue_mask_thumb = self._last_result.get("tissue_mask_thumb")
+            thumb_to_level0 = self._last_result.get("thumb_to_level0", 1.0)
 
         # 回退：如果预览图上没有编辑过的 ROI，使用原始检测结果
         if not roi_rects_preview and self._last_result is not None:
@@ -2137,17 +2159,16 @@ class IHCHotspotDialog(QDialog):
             roi_list.append((x0, y0, w0, h0))
 
         # 过滤：组织面积 < 50% 的 ROI 不生成
-        if tissue_mask_l0 is not None and roi_list:
-            mask_h, mask_w = tissue_mask_l0.shape
+        if tissue_mask_thumb is not None and roi_list:
+            mask_h, mask_w = tissue_mask_thumb.shape
+            inv_scale = 1.0 / thumb_to_level0
             filtered_list = []
             for x, y, w, h in roi_list:
-                mx = max(0, min(x, mask_w - 1))
-                my = max(0, min(y, mask_h - 1))
-                mw = min(w, mask_w - mx)
-                mh = min(h, mask_h - my)
-                if mw < 1 or mh < 1:
-                    continue
-                patch = tissue_mask_l0[my:my + mh, mx:mx + mw]
+                tx = max(0, min(int(x * inv_scale), mask_w - 1))
+                ty = max(0, min(int(y * inv_scale), mask_h - 1))
+                tw = max(1, min(int(w * inv_scale), mask_w - tx))
+                th = max(1, min(int(h * inv_scale), mask_h - ty))
+                patch = tissue_mask_thumb[ty:ty + th, tx:tx + tw]
                 if float(patch.mean()) >= 0.5:
                     filtered_list.append((x, y, w, h))
             skipped = len(roi_list) - len(filtered_list)

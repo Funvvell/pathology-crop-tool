@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -1228,14 +1229,16 @@ class MainWindow(QMainWindow):
         reader = self._readers.get(self._current_slide) or next(iter(self._readers.values()))
         tile_w = self._frame_w_spin.value()
         tile_h = self._frame_h_spin.value()
-        slide_path = self._current_slide
-
-        full_w = getattr(reader, 'full_width', 0) or 0
-        full_h = getattr(reader, 'full_height', 0) or 0
 
         def _add_rois_to_canvas(roi_list: list[tuple[int, int, int, int]]) -> None:
-            """回调：将 [(x, y, w, h), ...] 直接添加到 ROI 管理器 + 画布。"""
-            import uuid
+            """回调：将 [(x, y, w, h), ...] 直接添加到 ROI 管理器 + 画布。
+            注意：使用 self._current_slide 而非闭包捕获值，防止用户切换切片后过期。
+            """
+            current = self._current_slide
+            cur_reader = self._readers.get(current)
+            full_w = getattr(cur_reader, 'full_width', 0) or 0 if cur_reader else 0
+            full_h = getattr(cur_reader, 'full_height', 0) or 0 if cur_reader else 0
+
             created = 0
             for x, y, w, h in roi_list:
                 try:
@@ -1248,34 +1251,37 @@ class MainWindow(QMainWindow):
                     if w < 1 or h < 1:
                         continue
                     roi = ROIModel(
-                        slide_path=slide_path,
+                        slide_path=current,
                         x=x, y=y, w=w, h=h,
                         id=uuid.uuid4().hex[:12],
                     )
                     self._roi_manager.add_roi(roi)
                     created += 1
                 except Exception as exc:
-                    import logging
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         "创建 IHC ROI 失败 (%d,%d,%d,%d): %s", x, y, w, h, exc,
                     )
 
             # 刷新画布
             try:
                 self._canvas.clear_roi_rects()
-                if slide_path and slide_path in self._readers:
-                    for roi in self._roi_manager.get_slide_rois(slide_path):
+                if current and current in self._readers:
+                    for roi in self._roi_manager.get_slide_rois(current):
                         self._canvas.add_roi_rect(
                             roi.id,
                             QRectF(roi.x, roi.y, roi.w, roi.h),
                             angle=roi.angle,
                         )
             except Exception as exc:
-                import logging
-                logging.getLogger(__name__).warning("刷新画布 ROI 失败: %s", exc)
+                logger.warning("刷新画布 ROI 失败: %s", exc)
 
             self._refresh_roi_list()
             self._status_label.setText(f"IHC 热点检测: 共 {created} 个 ROI")
+
+        # 如果已有打开的 IHC 对话框，先关闭
+        old_dlg = getattr(self, '_ihc_dlg', None)
+        if old_dlg is not None and old_dlg.isVisible():
+            old_dlg.close()
 
         dlg = IHCHotspotDialog(
             reader, tile_w, tile_h, self,
