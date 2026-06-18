@@ -144,8 +144,8 @@ class ExportController(BaseController):
         self.app._exporter.progress.connect(
             lambda v, t: self._update_export_progress(v, t),
         )
-        self.app._exporter.file_done.connect(self._on_export_file_done)
-        self.app._exporter.finished.connect(self.on_export_finished)
+        self.app._exporter.file_done.connect(self.app._on_export_file_done)
+        self.app._exporter.finished.connect(self.app._on_export_finished)
         self.app._exporter.finished.connect(self.app._export_thread.quit)
 
         self.app._export_thread.start()
