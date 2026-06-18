@@ -1,6 +1,7 @@
 """病理裁剪工具 入口点"""
 
 import ctypes
+import logging
 import sys
 from pathlib import Path
 from PySide6.QtCore import Qt
@@ -34,6 +35,25 @@ def _create_arrow_pixmaps(theme_dir: Path):
 
 
 def main():
+    # 配置日志：写入用户主目录下的日志文件（便于诊断打包后的问题）
+    _log_path = Path.home() / "pathology-crop-tool.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s  %(message)s",
+        datefmt="%H:%M:%S",
+        filename=str(_log_path),
+        filemode="a",
+    )
+    _logger = logging.getLogger("main")
+    _logger.info("=" * 60)
+    _logger.info("病理裁剪工具启动")
+    _logger.info("=" * 60)
+
+    # 捕获未处理异常，写入日志（PyInstaller console=False 时异常不会显示）
+    def _log_uncaught(exc_type, exc_value, exc_tb):
+        _logger.critical("未捕获异常", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _log_uncaught
+
     # 让 Windows 任务栏使用窗口图标而非默认 exe 图标
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PathologyCropTool")
 
