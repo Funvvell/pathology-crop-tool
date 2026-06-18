@@ -1933,10 +1933,8 @@ class IHCHotspotDialog(QDialog):
         n_hs = len(result["hotspots"])
         if n_hs > 0:
             self._stage_lbl.setText(
-                f"扫描完成 — 检测到 {n_hs} 个热点，已自动生成 ROI"
+                f"扫描完成 — 检测到 {n_hs} 个热点，可拖拽调整后点击「生成 ROI」"
             )
-            # 自动生成 ROI，无需用户手动点击「生成 ROI」
-            QTimer.singleShot(0, self._on_generate_roi)
         else:
             self._stage_lbl.setText("扫描完成 — 未检测到热点，可尝试调整检测参数")
 
