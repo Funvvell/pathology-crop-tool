@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,8 @@ from PySide6.QtCore import QObject, Signal
 from liver_portal_crop.reader import SDPCReader
 from liver_portal_crop.roi import ROIModel
 from liver_portal_crop.utils import center_crop_rect
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,6 +60,7 @@ class BatchExporter(QObject):
         """
         total = len(rois)
         self._config.output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("导出开始: %d 个 ROI, 输出: %s", total, self._config.output_dir)
 
         # 按文件分组
         groups: dict[Path, list[tuple[int, ROIModel]]] = defaultdict(list)
@@ -68,14 +72,17 @@ class BatchExporter(QObject):
         for path in groups:
             val = path_to_reader.get(path)
             if val is None:
+                logger.warning("导出跳过: 无 reader 映射 — %s", path)
                 continue
             if isinstance(val, SDPCReader):
                 readers[path] = val
+                logger.info("导出复用已有 reader: %s", path.name)
             else:
                 try:
                     readers[path] = SDPCReader(val)
+                    logger.info("导出新建 reader: %s", path.name)
                 except Exception:
-                    pass  # 打开失败则跳过
+                    logger.warning("导出跳过: 无法打开文件 — %s", path, exc_info=True)
 
         for idx, roi in enumerate(rois):
             if self._cancel_flag:
@@ -119,9 +126,11 @@ class BatchExporter(QObject):
                 self.file_done.emit(str(output_path), "ok")
 
             except Exception as e:
+                logger.warning("导出失败 ROI #%d: %s", idx, e)
                 self.file_done.emit(
                     f"{roi.slide_path.stem}_ROI_{idx:04d}.tiff",
                     f"error:{e}",
                 )
 
+        logger.info("导出完成: %d 个 ROI", total)
         self.finished.emit()
