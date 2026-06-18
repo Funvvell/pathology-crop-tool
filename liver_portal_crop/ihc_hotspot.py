@@ -297,6 +297,71 @@ def find_hotspots(
     return selected
 
 
+def _fit_hotspots_to_tissue(
+    hotspots: list[tuple[int, int, int, int, float]],
+    tissue_mask_thumb: np.ndarray,
+    thumb_to_level0: float,
+    level0_w: int,
+    level0_h: int,
+) -> list[tuple[int, int, int, int, float]]:
+    """将热点 ROI 扩展到所在组织连通区域的完整范围。
+
+    对每个热点：
+      1. 找到热点中心所在的组织连通分量
+      2. 用该分量的 bounding box 替换固定尺寸的 ROI
+      3. 保持密度峰值不变
+
+    Args:
+        hotspots: find_hotspots 返回的热点列表 [(x, y, w, h, density), ...]
+        tissue_mask_thumb: 缩略图尺寸的组织 mask (uint8, 0/255)
+        thumb_to_level0: 缩略图坐标 → level-0 坐标的比例因子
+        level0_w, level0_h: level-0 全分辨率宽高
+
+    Returns:
+        调整后的热点列表
+    """
+    if not hotspots:
+        return hotspots
+
+    mask_bin = (tissue_mask_thumb > 0).astype(np.uint8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask_bin, connectivity=8,
+    )
+
+    fitted: list[tuple[int, int, int, int, float]] = []
+    for x, y, w, h, d in hotspots:
+        # 热点中心 level-0 → 缩略图坐标
+        cx_thumb = int((x + w / 2) / thumb_to_level0)
+        cy_thumb = int((y + h / 2) / thumb_to_level0)
+
+        # 钳制到缩略图边界
+        cx_thumb = max(0, min(cx_thumb, labels.shape[1] - 1))
+        cy_thumb = max(0, min(cy_thumb, labels.shape[0] - 1))
+
+        label = int(labels[cy_thumb, cx_thumb])
+        if label > 0:
+            # 该组织连通区域的 bounding box（缩略图空间）
+            bx = int(stats[label, cv2.CC_STAT_LEFT])
+            by = int(stats[label, cv2.CC_STAT_TOP])
+            bw = int(stats[label, cv2.CC_STAT_WIDTH])
+            bh = int(stats[label, cv2.CC_STAT_HEIGHT])
+
+            # 缩略图 → level-0
+            fx = max(0, int(bx * thumb_to_level0))
+            fy = max(0, int(by * thumb_to_level0))
+            fw = min(int(bw * thumb_to_level0), level0_w - fx)
+            fh = min(int(bh * thumb_to_level0), level0_h - fy)
+
+            if fw > 0 and fh > 0:
+                fitted.append((fx, fy, fw, fh, d))
+                continue
+
+        # 回退：热点不在组织区域内，保留原始尺寸
+        fitted.append((x, y, w, h, d))
+
+    return fitted
+
+
 # ═══════════════════════════════════════════════════════════════
 #  5. 全分辨率精确验证
 # ═══════════════════════════════════════════════════════════════
@@ -911,6 +976,24 @@ def detect_ihc_hotspots_tiled(
         eff_scale_x, eff_scale_y,
         n_hotspots, min_density,
     )
+
+    # ── 阶段 4：将热点 ROI 扩展到组织连通区域 ──
+    if hotspots:
+        try:
+            thumb = reader.thumbnail
+            thumb_h_px, thumb_w_px = thumb.shape[:2]
+            full_w_l0 = lv_w * ds
+            full_h_l0 = lv_h * ds
+            # 缩略图 → level-0 比例（取均值）
+            thumb_to_l0 = (full_w_l0 / thumb_w_px + full_h_l0 / thumb_h_px) / 2.0
+            tissue_result = detect_tissue(thumb, max_brightness=230)
+            hotspots = _fit_hotspots_to_tissue(
+                hotspots, tissue_result["mask"], thumb_to_l0,
+                full_w_l0, full_h_l0,
+            )
+            logger.info("热点已适配组织区域: %d 个", len(hotspots))
+        except Exception:
+            logger.warning("热点适配组织区域失败，使用原始 ROI 尺寸", exc_info=True)
 
     pos_pct = float(
         (accumulated_mask > 0).sum() / accumulated_mask.size * 100
