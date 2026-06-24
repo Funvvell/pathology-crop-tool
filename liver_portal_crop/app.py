@@ -466,14 +466,14 @@ class MainWindow(QMainWindow):
 
         # ── 顶部工具栏（QStackedWidget：画布工具栏 / 预览工具栏）──
         self._toolbar_stack = QStackedWidget()
-        self._toolbar_stack.setFixedHeight(36)
+        self._toolbar_stack.setFixedHeight(40)
 
         # --- 画布工具栏 (index 0) ---
         canvas_tb = QWidget()
         canvas_tb.setObjectName("topToolbar")
         tbar = QHBoxLayout(canvas_tb)
-        tbar.setContentsMargins(10, 4, 10, 4)
-        tbar.setSpacing(6)
+        tbar.setContentsMargins(12, 6, 12, 6)
+        tbar.setSpacing(8)
 
         self._status_label = QLabel("就绪")
         self._status_label.setObjectName("statusLabel")
@@ -591,8 +591,8 @@ class MainWindow(QMainWindow):
         preview_tb = QWidget()
         preview_tb.setObjectName("topToolbar")
         ptbar = QHBoxLayout(preview_tb)
-        ptbar.setContentsMargins(10, 4, 10, 4)
-        ptbar.setSpacing(6)
+        ptbar.setContentsMargins(12, 6, 12, 6)
+        ptbar.setSpacing(8)
 
         self._preview_status_label = QLabel("ROI 预览")
         self._preview_status_label.setObjectName("statusLabel")
@@ -678,12 +678,13 @@ class MainWindow(QMainWindow):
 
         # ── 内容区 ──
         self._body = QSplitter(Qt.Orientation.Horizontal)
-        self._body.setHandleWidth(1)
+        self._body.setHandleWidth(2)
 
         # 左侧：导航缩略图 + 文件列表（预览模式下隐藏）
         self._left_panel = QWidget()
+        self._left_panel.setObjectName("sidePanel")
         left_layout = QVBoxLayout(self._left_panel)
-        left_layout.setContentsMargins(10, 10, 6, 10)
+        left_layout.setContentsMargins(12, 12, 8, 12)
         left_layout.setSpacing(8)
 
         self._nav = NavigationWidget()
@@ -717,26 +718,29 @@ class MainWindow(QMainWindow):
 
         # 右侧：ROI 列表
         right_panel = QWidget()
+        right_panel.setObjectName("sidePanel")
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(6, 10, 10, 10)
+        right_layout.setContentsMargins(8, 12, 12, 12)
         right_layout.setSpacing(8)
 
         # 分析工具组
         analysis_group = QWidget()
         analysis_group.setObjectName("analysisGroup")
         analysis_layout = QVBoxLayout(analysis_group)
-        analysis_layout.setContentsMargins(0, 0, 0, 0)
-        analysis_layout.setSpacing(4)
+        analysis_layout.setContentsMargins(10, 8, 10, 10)
+        analysis_layout.setSpacing(6)
 
         analysis_header = QLabel("分析工具")
         analysis_header.setObjectName("sectionHeader")
         analysis_layout.addWidget(analysis_header)
 
         self._tissue_btn = QPushButton("组织检测 (HistoKit)")
+        self._tissue_btn.setObjectName("toolActionBtn")
         self._tissue_btn.clicked.connect(self._detect_tissue)
         analysis_layout.addWidget(self._tissue_btn)
 
         self._ihc_hotspot_btn = QPushButton("IHC 热点检测")
+        self._ihc_hotspot_btn.setObjectName("toolActionBtn")
         self._ihc_hotspot_btn.setToolTip(
             "自动识别免疫组化阳性区域密度最高的热点区域并生成 ROI"
         )
@@ -744,6 +748,7 @@ class MainWindow(QMainWindow):
         analysis_layout.addWidget(self._ihc_hotspot_btn)
 
         self._deepliif_btn = QPushButton("DeepLIIF 分析")
+        self._deepliif_btn.setObjectName("toolActionBtn")
         self._deepliif_btn.setToolTip("使用 DeepLIIF 进行 IHC 染色分析和细胞分割")
         self._deepliif_btn.clicked.connect(self._on_deepliif_btn_clicked)
         self._deepliif_btn.setVisible(False)
@@ -762,7 +767,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(roi_pos_header)
 
         roi_form = QFormLayout()
-        roi_form.setSpacing(4)
+        roi_form.setSpacing(6)
         roi_form.setContentsMargins(0, 0, 0, 0)
         self._roi_x_spin = QSpinBox()
         self._roi_x_spin.setRange(0, 9999999)
@@ -794,7 +799,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self._roi_list)
 
         roi_btn_layout = QVBoxLayout()
-        roi_btn_layout.setSpacing(4)
+        roi_btn_layout.setSpacing(6)
         self._delete_roi_btn = QPushButton("删除选中 ROI")
         self._delete_roi_btn.setObjectName("dangerBtn")
         self._delete_roi_btn.clicked.connect(self._delete_selected_roi)
@@ -811,7 +816,7 @@ class MainWindow(QMainWindow):
 
         self._body.addWidget(right_panel)
 
-        self._body.setSizes([220, 700, 220])
+        self._body.setSizes([240, 680, 240])
         main_layout.addWidget(self._body, 1)
 
     def _connect_signals(self) -> None:
