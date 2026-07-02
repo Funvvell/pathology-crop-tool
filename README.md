@@ -129,8 +129,11 @@ SDPC 全切片病理图像浏览 · ROI 标注 · IHC 热点检测 · AI 分析 
 git clone https://github.com/Funvvell/pathology-crop-tool.git
 cd pathology-crop-tool
 
-# 安装依赖
+# 安装核心依赖（浏览 / 裁剪 / 组织检测 / IHC 热点）
 pip install -e .
+
+# [可选] 安装 AI 功能依赖（DeepLIIF 推理，~5GB）
+pip install -e ".[ai]"
 
 # 启动
 python main.py
@@ -349,6 +352,42 @@ IHC 测试覆盖：色彩反卷积正确性 · 阈值判定 · 密度图计算 �
 ```
 
 如遇问题可查看该文件进行诊断。
+
+---
+
+## 📋 更新日志
+
+### v0.8.1 — Code Review 修复版
+
+**线程安全**
+
+- 导出取消标志改用 `threading.Event`，消除跨线程竞态
+- IHC 热点检测取消标志同步改用 `threading.Event`
+
+**异常处理**
+
+- `reader.py` 8 处静默 `except: pass` 添加诊断日志
+- `canvas.py` tile 加载失败添加 `logger.debug`
+- `roi.py` `from_json` 添加容错处理，损坏 JSON 不再崩溃
+
+**性能与健壮性**
+
+- `QImage` 构造后添加 `.copy()`，防止 numpy 缓冲区释放后崩溃
+- IHC 热点 NMS 改用欧氏距离（圆形排除区），替代切比雪夫距离
+- 导出 `local_idx` 改用预计算 dict，O(N²) → O(1)
+- `closeEvent` 添加 `wait(3000)` 等待线程退出
+
+**依赖管理**
+
+- `torch` / `torchvision` / `deepliif` 改为可选依赖（`pip install -e ".[ai]"`）
+- 核心安装减少约 5GB 下载量
+
+### v0.8.0
+
+- 新增标签图（macrograph）常驻显示 + 旋转控制
+- 新增切片元数据对话框（PicHead / PersonInfo / ExtraInfo）
+- `reader.py` 扩展：metadata 属性、macrograph 读取
+- 主题系统升级（v2 圆角 / 配色 / hover 状态）
 
 ---
 
