@@ -85,6 +85,12 @@ class BatchExporter(QObject):
                 except Exception:
                     logger.warning("导出跳过: 无法打开文件 — %s", path, exc_info=True)
 
+        # 预计算全局索引 → 局部索引映射（避免 O(N²) 线性查找）
+        global_to_local: dict[int, int] = {}
+        for _path, file_rois in groups.items():
+            for local_n, (global_n, _) in enumerate(file_rois):
+                global_to_local[global_n] = local_n
+
         for idx, roi in enumerate(rois):
             if self._cancel_event.is_set():
                 break
@@ -94,8 +100,9 @@ class BatchExporter(QObject):
             try:
                 reader = readers.get(roi.slide_path)
                 if reader is None:
+                    local_idx = global_to_local.get(idx, idx)
                     self.file_done.emit(
-                        f"{roi.slide_path.stem}_ROI_{idx:04d}.tiff",
+                        f"{roi.slide_path.stem}_ROI_{local_idx:04d}.tiff",
                         "error:slide not loaded",
                     )
                     continue
@@ -113,8 +120,7 @@ class BatchExporter(QObject):
                     crop_x, crop_y, crop_w, crop_h, level=0,
                 )
 
-                file_rois = groups[roi.slide_path]
-                local_idx = next(n for n, (i, _) in enumerate(file_rois) if i == idx)
+                local_idx = global_to_local.get(idx, idx)
 
                 mag_suffix = f"_{self._config.mag_label}" if self._config.mag_label else ""
                 output_name = f"{roi.slide_path.stem}_ROI_{local_idx:04d}{mag_suffix}.tiff"
@@ -128,8 +134,9 @@ class BatchExporter(QObject):
 
             except Exception as e:
                 logger.warning("导出失败 ROI #%d: %s", idx, e)
+                local_idx = global_to_local.get(idx, idx)
                 self.file_done.emit(
-                    f"{roi.slide_path.stem}_ROI_{idx:04d}.tiff",
+                    f"{roi.slide_path.stem}_ROI_{local_idx:04d}.tiff",
                     f"error:{e}",
                 )
 

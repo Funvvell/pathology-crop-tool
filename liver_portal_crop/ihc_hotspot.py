@@ -281,8 +281,9 @@ def find_hotspots(
 
         too_close = False
         for sx, sy, sw, sh, _ in selected:
-            if (abs(full_cx - (sx + sw // 2)) < nms_distance
-                    and abs(full_cy - (sy + sh // 2)) < nms_distance):
+            dx = full_cx - (sx + sw // 2)
+            dy = full_cy - (sy + sh // 2)
+            if math.hypot(dx, dy) < nms_distance:
                 too_close = True
                 break
         if too_close:
@@ -2241,8 +2242,7 @@ class IHCHotspotDialog(QDialog):
         return self._last_result
 
     def closeEvent(self, event):
-        # 标记取消（若线程仍在运行），但不阻塞等待线程退出
-        # 避免在对话框关闭过程中操作 QThread 导致段错误
+        # 标记取消并等待线程退出（短超时），避免段错误
         if self._thread is not None and self._thread.isRunning():
             self._worker.cancel()
             try:
@@ -2253,4 +2253,7 @@ class IHCHotspotDialog(QDialog):
             except (RuntimeError, TypeError):
                 pass
             self._thread.quit()
+            # 短暂等待线程退出（最多 3 秒），超时则强制继续
+            if not self._thread.wait(3000):
+                logger.warning("IHC 热点检测线程未在 3 秒内退出")
         super().closeEvent(event)
