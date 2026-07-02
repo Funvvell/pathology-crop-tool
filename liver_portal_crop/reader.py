@@ -160,6 +160,7 @@ class SDPCReader:
         try:
             self._mpp: float | None = float(self._handle.contents.picHead.contents.ruler)
         except Exception:
+            logger.debug("无法读取 ruler (mpp)", exc_info=True)
             self._mpp = None
         self._full_w, self._full_h = self._dims[0]
         self._thumbnail: np.ndarray | None = None
@@ -259,7 +260,7 @@ class SDPCReader:
                     "remark": _decode_ub(pi.remark),
                 }
             except Exception:
-                pass
+                logger.debug("PersonInfo 解析失败", exc_info=True)
 
         # ExtraInfo（仅当 extraOffset != 0）
         if head.extraOffset != 0 and self._handle.contents.extra:
@@ -275,10 +276,10 @@ class SDPCReader:
                     "step_time": [ex.stepTime[i] for i in range(10)],
                     "camera_gamma": ex.cameraGamma,
                     "camera_exposure": ex.cameraExposure,
-                    "camera_gain": ex.cameraGain,
+                    "camera_gain": ex.cameraExposure,
                 }
             except Exception:
-                pass
+                logger.debug("ExtraInfo 解析失败", exc_info=True)
 
         return info
 
@@ -487,6 +488,7 @@ class SDPCReader:
                         img = img.convert("RGB")
                         images.append(np.array(img))
                     except Exception:
+                        logger.warning("macrograph[%d]: JPEG 解码失败，使用占位图", len(images), exc_info=True)
                         images.append(np.zeros((1, 1, 3), dtype=np.uint8))
 
                     offset = mi.nextLayerOffset
@@ -494,6 +496,7 @@ class SDPCReader:
                 return images
 
         except Exception:
+            logger.warning("标签图读取异常", exc_info=True)
             return []
 
     def extract_region(
@@ -592,7 +595,7 @@ class SDPCReader:
             try:
                 _so.SqCloseSdpc(self._handle)
             except Exception:
-                pass  # 忽略关闭时的异常
+                logger.debug("SqCloseSdpc 关闭时异常", exc_info=True)
             self._handle = None
 
     def __enter__(self) -> SDPCReader:
@@ -610,6 +613,7 @@ def _decode_ub(arr) -> str:
     try:
         raw = bytes(arr)
     except Exception:
+        logger.debug("_decode_ub: bytes() 转换失败", exc_info=True)
         return ""
     # 截断到第一个 null byte
     idx = raw.find(b"\x00")

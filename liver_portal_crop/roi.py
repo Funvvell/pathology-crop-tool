@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import QObject, Signal
 
@@ -48,9 +51,10 @@ class ROIManager(QObject):
             self.roi_removed.emit(roi_id)
 
     def clear_slide_rois(self, slide_path: Path) -> None:
+        norm = slide_path.resolve()
         to_remove = [
             rid for rid, r in self._rois.items()
-            if r.slide_path == slide_path
+            if r.slide_path.resolve() == norm
         ]
         for rid in to_remove:
             del self._rois[rid]
@@ -67,10 +71,6 @@ class ROIManager(QObject):
         """序列化所有 ROI 为 JSON 兼容 dict。"""
         def _serialize(roi: ROIModel) -> dict:
             d = asdict(roi)
-            d["x"] = roi.x
-            d["y"] = roi.y
-            d["w"] = roi.w
-            d["h"] = roi.h
             d["slide_path"] = str(roi.slide_path)
             d["created_at"] = roi.created_at.isoformat()
             return d
@@ -81,14 +81,17 @@ class ROIManager(QObject):
         """从 JSON 数据恢复 ROI。兼容旧字段名 thumb_x/y/w/h。"""
         self._rois.clear()
         for item in data.get("rois", []):
-            roi = ROIModel(
-                id=item["id"],
-                slide_path=Path(item["slide_path"]),
-                x=item.get("x", item.get("thumb_x", 0)),
-                y=item.get("y", item.get("thumb_y", 0)),
-                w=item.get("w", item.get("thumb_w", 0)),
-                h=item.get("h", item.get("thumb_h", 0)),
-                angle=item.get("angle", 0.0),
-                created_at=datetime.fromisoformat(item["created_at"]),
-            )
-            self._rois[roi.id] = roi
+            try:
+                roi = ROIModel(
+                    id=item["id"],
+                    slide_path=Path(item["slide_path"]),
+                    x=item.get("x", item.get("thumb_x", 0)),
+                    y=item.get("y", item.get("thumb_y", 0)),
+                    w=item.get("w", item.get("thumb_w", 0)),
+                    h=item.get("h", item.get("thumb_h", 0)),
+                    angle=item.get("angle", 0.0),
+                    created_at=datetime.fromisoformat(item["created_at"]),
+                )
+                self._rois[roi.id] = roi
+            except (KeyError, ValueError, TypeError) as e:
+                logger.warning("跳过无效 ROI 条目 (%s): %s", e, item.get("id", "?"))
