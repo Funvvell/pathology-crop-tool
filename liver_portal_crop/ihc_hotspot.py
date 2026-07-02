@@ -1530,13 +1530,13 @@ class _ScanWorker(QObject):
         self._tile_read_size = tile_read_size
         self._analysis_ds = analysis_ds
         self._max_preview_dim = max_preview_dim
-        self._cancel = False
+        self._cancel_event = threading.Event()
 
     def cancel(self):
-        self._cancel = True
+        self._cancel_event.set()
 
     def _is_cancelled(self) -> bool:
-        return self._cancel
+        return self._cancel_event.is_set()
 
     def run(self):
         try:
@@ -1563,7 +1563,7 @@ class _ScanWorker(QObject):
                 progress_callback=self._emit_progress,
             )
 
-            if self._cancel:
+            if self._cancel_event.is_set():
                 return
 
             # ── 可选：全分辨率精确验证 ──
@@ -1580,12 +1580,12 @@ class _ScanWorker(QObject):
                     progress_callback=self._emit_progress,
                 )
 
-            if not self._cancel:
+            if not self._cancel_event.is_set():
                 preview = result["preview_image"]
                 self.finished.emit(preview, result)
 
         except Exception as exc:
-            if not self._cancel:
+            if not self._cancel_event.is_set():
                 self.error.emit(str(exc))
 
     def _emit_stage(self, text: str):

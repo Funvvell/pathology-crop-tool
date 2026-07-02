@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,10 +43,10 @@ class BatchExporter(QObject):
     def __init__(self, config: CropConfig, parent=None):
         super().__init__(parent)
         self._config = config
-        self._cancel_flag = False
+        self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
-        self._cancel_flag = True
+        self._cancel_event.set()
 
     def run(
         self,
@@ -85,7 +86,7 @@ class BatchExporter(QObject):
                     logger.warning("导出跳过: 无法打开文件 — %s", path, exc_info=True)
 
         for idx, roi in enumerate(rois):
-            if self._cancel_flag:
+            if self._cancel_event.is_set():
                 break
 
             self.progress.emit(idx + 1, total)
