@@ -342,6 +342,7 @@ class WSICanvas(QGraphicsView):
         self._frame_angle_start_mouse: float = 0.0
         self._frame_angle_start_value: float = 0.0
         self._drag_roi_mode: QGraphicsView.DragMode | None = None
+        self._drag_others: list | None = None
 
         self._scene.selectionChanged.connect(self._on_scene_selection_changed)
 
@@ -515,7 +516,7 @@ class WSICanvas(QGraphicsView):
         rect = QRectF(pos.x(), pos.y(), self._frame_w, self._frame_h)
         if not self._scene.sceneRect().intersects(rect):
             return
-        roi_id = uuid.uuid4().hex[:12]
+        roi_id = uuid.uuid4().hex[:ROI_ID_LENGTH]
         self.add_roi_rect(roi_id, rect, angle=self._frame_angle)
         self.roi_created.emit(roi_id, rect, self._frame_angle)
 
@@ -601,7 +602,7 @@ class WSICanvas(QGraphicsView):
                 region = r._read_level_region(_level, tx, ty, tw, th)
                 img_bytes = region.tobytes()
                 img = QImage(img_bytes, tw, th, tw * 3,
-                             QImage.Format.Format_RGB888)
+                             QImage.Format.Format_RGB888).copy()
                 if img.isNull():
                     continue
                 pix = QPixmap.fromImage(img)

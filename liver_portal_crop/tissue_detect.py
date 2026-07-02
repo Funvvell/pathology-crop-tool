@@ -415,7 +415,7 @@ class TissueDialog(QDialog):
         ).clip(0, 255).astype(np.uint8)
 
         h, w = overlay.shape[:2]
-        img = QImage(overlay.data, w, h, w * 3, QImage.Format.Format_RGB888)
+        img = QImage(overlay.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
         pix = QPixmap.fromImage(img).scaled(500, 300, Qt.AspectRatioMode.KeepAspectRatio)
         self._preview_lbl.setPixmap(pix)
         self._info_lbl.setText(
