@@ -15,17 +15,17 @@ logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QRectF, QThread, QTimer, QObject, Signal
 from PySide6.QtWidgets import QDialog
-from PySide6.QtGui import QAction, QImage, QPixmap
+from PySide6.QtGui import QAction, QImage, QPixmap, QTransform
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QMainWindow, QMenuBar, QMessageBox,
+    QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMenuBar, QMessageBox,
     QProgressBar, QProgressDialog, QPushButton, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from liver_portal_crop.theme import load_theme
 from liver_portal_crop.canvas import WSICanvas
-from liver_portal_crop.dialogs import SettingsDialog
+from liver_portal_crop.dialogs import SettingsDialog, ImageViewDialog, SliceInfoDialog
 from liver_portal_crop.exporter import BatchExporter, CropConfig
 from liver_portal_crop.navigator import NavigationWidget
 from liver_portal_crop.tissue_detect import (
@@ -432,6 +432,8 @@ class MainWindow(QMainWindow):
         self._current_slide: Path | None = None
         self._current_theme: str = "dark"
         self._selected_roi_id: str | None = None
+        self._label_rotation: int = 0
+        self._label_raw_image: np.ndarray | None = None
         self._preview_refresh_timer = QTimer()
         self._preview_refresh_timer.setSingleShot(True)
         self._preview_refresh_timer.setInterval(PREVIEW_REFRESH_MS)
@@ -691,10 +693,48 @@ class MainWindow(QMainWindow):
         self._nav.setObjectName("navWidget")
         left_layout.addWidget(self._nav)
 
+        # 标签图（常驻显示在导航图下方）
+        self._label_header = QLabel("标签图")
+        self._label_header.setObjectName("sectionHeader")
+        left_layout.addWidget(self._label_header)
+        self._label_img = QLabel()
+        self._label_img.setObjectName("labelImage")
+        self._label_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label_img.setMinimumHeight(80)
+        self._label_img.setMaximumHeight(180)
+        self._label_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._label_img.setText("—")
+        left_layout.addWidget(self._label_img)
+
+        # 标签图旋转按钮
+        _rot_layout = QHBoxLayout()
+        _rot_layout.setSpacing(4)
+        _rot_layout.setContentsMargins(0, 0, 0, 0)
+        self._label_rot_left_btn = QPushButton("\u21ba 90\u00b0")
+        self._label_rot_left_btn.setEnabled(False)
+        self._label_rot_left_btn.clicked.connect(self._on_label_rotate_left)
+        self._label_rot_right_btn = QPushButton("\u21bb 90\u00b0")
+        self._label_rot_right_btn.setEnabled(False)
+        self._label_rot_right_btn.clicked.connect(self._on_label_rotate_right)
+        _rot_layout.addWidget(self._label_rot_left_btn)
+        _rot_layout.addWidget(self._label_rot_right_btn)
+        left_layout.addLayout(_rot_layout)
+
+        # 切片信息按钮
+        self._slice_info_btn = QPushButton("切片信息")
+        self._slice_info_btn.setObjectName("toolActionBtn")
+        self._slice_info_btn.setEnabled(False)
+        self._slice_info_btn.clicked.connect(self._show_slice_info)
+        left_layout.addWidget(self._slice_info_btn)
+
         file_list_header = QLabel("文件列表")
         file_list_header.setObjectName("sectionHeader")
         left_layout.addWidget(file_list_header)
         self._file_list = QListWidget()
+        self._file_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self._file_list.customContextMenuRequested.connect(self._show_file_context_menu)
         left_layout.addWidget(self._file_list)
 
         file_btn_layout = QHBoxLayout()
@@ -761,37 +801,6 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(analysis_group)
 
-        # ROI 位置编辑（选中后启用）
-        roi_pos_header = QLabel("ROI 位置")
-        roi_pos_header.setObjectName("sectionHeader")
-        right_layout.addWidget(roi_pos_header)
-
-        roi_form = QFormLayout()
-        roi_form.setSpacing(6)
-        roi_form.setContentsMargins(0, 0, 0, 0)
-        self._roi_x_spin = QSpinBox()
-        self._roi_x_spin.setRange(0, 9999999)
-        self._roi_x_spin.setEnabled(False)
-        roi_form.addRow("X:", self._roi_x_spin)
-        self._roi_y_spin = QSpinBox()
-        self._roi_y_spin.setRange(0, 9999999)
-        self._roi_y_spin.setEnabled(False)
-        roi_form.addRow("Y:", self._roi_y_spin)
-        self._roi_w_spin = QSpinBox()
-        self._roi_w_spin.setRange(1, 9999999)
-        self._roi_w_spin.setEnabled(False)
-        roi_form.addRow("W:", self._roi_w_spin)
-        self._roi_h_spin = QSpinBox()
-        self._roi_h_spin.setRange(1, 9999999)
-        self._roi_h_spin.setEnabled(False)
-        roi_form.addRow("H:", self._roi_h_spin)
-        right_layout.addLayout(roi_form)
-
-        self._roi_x_spin.valueChanged.connect(self._on_roi_spin_changed)
-        self._roi_y_spin.valueChanged.connect(self._on_roi_spin_changed)
-        self._roi_w_spin.valueChanged.connect(self._on_roi_spin_changed)
-        self._roi_h_spin.valueChanged.connect(self._on_roi_spin_changed)
-
         roi_list_header = QLabel("ROI 列表")
         roi_list_header.setObjectName("sectionHeader")
         right_layout.addWidget(roi_list_header)
@@ -816,7 +825,7 @@ class MainWindow(QMainWindow):
 
         self._body.addWidget(right_panel)
 
-        self._body.setSizes([240, 680, 240])
+        self._body.setSizes([240, 720, 200])
         main_layout.addWidget(self._body, 1)
 
     def _connect_signals(self) -> None:
@@ -831,6 +840,14 @@ class MainWindow(QMainWindow):
         self._canvas.viewport_changed.connect(self._nav.update_viewport)
         self._canvas.frame_angle_changed.connect(self._on_canvas_frame_angle_changed)
         self._nav.navigated.connect(self._on_nav_clicked)
+        self._label_img.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self._label_img and event.type() == QEvent.Type.MouseButtonPress:
+            self._show_label_image()
+            return True
+        return super().eventFilter(obj, event)
 
     def _setup_menu(self) -> None:
         menubar = self.menuBar()
@@ -944,12 +961,6 @@ class MainWindow(QMainWindow):
 
     def _on_roi_list_selected(self, row: int) -> None:
         self._roi_controller.on_roi_list_selected(row)
-
-    def _on_roi_spin_changed(self) -> None:
-        self._roi_controller.on_roi_spin_changed()
-
-    def _update_roi_spins(self) -> None:
-        self._roi_controller.update_roi_spins()
 
     def _on_roi_added(self, roi: ROIModel) -> None:
         self._roi_controller.on_roi_added(roi)
@@ -2380,6 +2391,180 @@ class MainWindow(QMainWindow):
         self._canvas.clear_overlays()
         self._clear_overlay_btn.setVisible(False)
         self._status_label.setText("已清除分析叠加")
+
+    # ── 切片信息面板 ──────────────────────────────────────────────
+
+    def _update_sdpc_info(self, reader: SDPCReader) -> None:
+        """更新左侧面板标签图显示和切片信息按钮。"""
+        self._slice_info_btn.setEnabled(True)
+        self._label_rotation = 0
+        self._label_raw_image = None
+        try:
+            label_img = reader.label_image
+            if label_img is not None and label_img.size > 3:
+                self._label_raw_image = label_img.copy()
+                self._label_rot_left_btn.setEnabled(True)
+                self._label_rot_right_btn.setEnabled(True)
+                self._render_label_thumb()
+                return
+        except Exception:
+            logger.debug("读取标签图失败", exc_info=True)
+        self._label_img.clear()
+        self._label_img.setText("—")
+        self._label_img.setToolTip("")
+        self._label_rot_left_btn.setEnabled(False)
+        self._label_rot_right_btn.setEnabled(False)
+
+    def _render_label_thumb(self) -> None:
+        """将 _label_raw_image 按当前旋转渲染到左侧缩略图（使用 Qt 原生旋转）。"""
+        img = self._label_raw_image
+        if img is None:
+            return
+
+        # 1. 始终从原始 numpy 数组创建 QPixmap（不做 numpy 旋转）
+        h, w = img.shape[:2]
+        qimg = QImage(img.data, w, h, w * 3, QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg.copy())
+
+        # 2. 先缩放到缩略图尺寸
+        lw = self._label_img.width()
+        mh = self._label_img.maximumHeight()
+        target_w = lw - 4 if lw > 4 else 200
+        scaled = pix.scaled(
+            target_w, mh,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        # 3. 使用 Qt QTransform 旋转（避免 numpy rot90 内存问题）
+        if self._label_rotation:
+            transform = QTransform().rotate(self._label_rotation)
+            scaled = scaled.transformed(transform, Qt.TransformationMode.SmoothTransformation)
+
+        # 4. 旋转时绘制角度标记
+        if self._label_rotation:
+            from PySide6.QtGui import QPainter, QColor, QFont
+            painter = QPainter(scaled)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            badge_text = f"{self._label_rotation}\u00b0"
+            font = QFont()
+            font.setPixelSize(14)
+            font.setBold(True)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(badge_text) + 12
+            th = fm.height() + 6
+            bx = scaled.width() - tw - 4
+            by = 4
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 160))
+            painter.drawRoundedRect(bx, by, tw, th, 4, 4)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(bx, by, tw, th, Qt.AlignmentFlag.AlignCenter, badge_text)
+            painter.end()
+
+        self._label_img.setPixmap(scaled)
+        rot_text = f"  {self._label_rotation}\u00b0" if self._label_rotation else ""
+        self._label_img.setToolTip(f"标签图 {w}\u00d7{h} px{rot_text}（点击查看大图）")
+
+    def _on_label_rotate_left(self) -> None:
+        self._label_rotation = (self._label_rotation - 90) % 360
+        self._render_label_thumb()
+
+    def _on_label_rotate_right(self) -> None:
+        self._label_rotation = (self._label_rotation + 90) % 360
+        self._render_label_thumb()
+
+    def _show_label_image(self) -> None:
+        """弹出对话框显示标签图（macrograph[0]）。"""
+        path = self._current_slide
+        if not path or path not in self._readers:
+            return
+        img = self._readers[path].label_image
+        if img is None or img.size <= 3:
+            QMessageBox.information(self, "标签图", "此文件不包含标签图")
+            return
+        dlg = ImageViewDialog(img, title=f"标签图 — {path.name}", parent=self)
+        dlg.exec()
+
+    def _show_slice_info(self) -> None:
+        """弹出对话框显示当前切片的元数据信息。"""
+        path = self._current_slide
+        if not path or path not in self._readers:
+            return
+        reader = self._readers[path]
+        metadata = reader.metadata
+        if not metadata:
+            QMessageBox.information(self, "切片信息", "无法读取切片信息")
+            return
+        dlg = SliceInfoDialog(metadata, title=f"切片信息 — {path.name}", parent=self)
+        dlg.exec()
+
+    def _show_file_context_menu(self, pos) -> None:
+        """文件列表右键菜单。"""
+        item = self._file_list.itemAt(pos)
+        if not item:
+            return
+        menu = QMenu(self)
+        rename_action = menu.addAction("重命名")
+        action = menu.exec(self._file_list.mapToGlobal(pos))
+        if action is rename_action:
+            self._rename_file(item)
+
+    def _rename_file(self, item: QListWidgetItem) -> None:
+        """重命名文件（磁盘 + UI 同步更新）。"""
+        path_str = item.data(Qt.ItemDataRole.UserRole)
+        old_path = Path(path_str) if path_str else None
+        if not old_path or old_path not in self._readers:
+            return
+
+        new_name, ok = QInputDialog.getText(
+            self, "重命名文件",
+            "新文件名（不含路径）:",
+            text=old_path.name,
+        )
+        if not ok or not new_name.strip():
+            return
+        new_name = new_name.strip()
+        if new_name == old_path.name:
+            return
+
+        # 确保扩展名存在
+        if not Path(new_name).suffix and old_path.suffix:
+            new_name += old_path.suffix
+
+        new_path = old_path.parent / new_name
+
+        # 检查目标是否已存在
+        if new_path.exists():
+            QMessageBox.warning(self, "重命名失败", f"文件已存在:\n{new_path.name}")
+            return
+
+        # 磁盘重命名
+        try:
+            old_path.rename(new_path)
+        except OSError as e:
+            QMessageBox.warning(self, "重命名失败", str(e))
+            return
+
+        # 更新 readers 字典
+        reader = self._readers.pop(old_path)
+        reader._path = new_path
+        self._readers[new_path] = reader
+
+        # 更新 ROI 管理器中的 slide_path
+        for roi in self._roi_manager.all_rois():
+            if roi.slide_path == old_path:
+                roi.slide_path = new_path
+
+        # 更新当前选中标记
+        if self._current_slide == old_path:
+            self._current_slide = new_path
+
+        # 更新列表项
+        item.setText(new_name)
+        item.setData(Qt.ItemDataRole.UserRole, str(new_path))
+        self._status_label.setText(f"已重命名: {new_name}")
 
     def _set_deepliif_model_dir(self) -> None:
         """设置 DeepLIIF 模型目录。"""

@@ -63,6 +63,7 @@ class FileController(BaseController):
             self.app._restore_roi_on_canvas()
             self.app._status_label.setText(f"当前: {path.name}")
             self._update_nav_thumb(reader)
+            self.app._update_sdpc_info(reader)
             if self.app._mag_cb.currentText() != "自定义":
                 self.app._auto_calc_frame()
 
