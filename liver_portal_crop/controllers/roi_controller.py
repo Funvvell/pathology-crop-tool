@@ -124,18 +124,11 @@ class ROIController(BaseController):
                 roi.h = int(new_rect.height())
                 roi.angle = round(angle, 2)
                 self.app._refresh_roi_list()
-                self.app._update_roi_spins()
                 break
         self.app._notify_preview_rois_changed()
 
     def on_roi_selection_changed(self, roi_id: str) -> None:
         self.app._selected_roi_id = roi_id if roi_id else None
-        enabled = bool(roi_id)
-        self.app._roi_x_spin.setEnabled(enabled)
-        self.app._roi_y_spin.setEnabled(enabled)
-        self.app._roi_w_spin.setEnabled(enabled)
-        self.app._roi_h_spin.setEnabled(enabled)
-        self.app._update_roi_spins()
 
         if roi_id:
             self.app._roi_list.blockSignals(True)
@@ -162,36 +155,6 @@ class ROIController(BaseController):
         roi_id = item.data(Qt.ItemDataRole.UserRole)
         if roi_id:
             self.canvas.select_roi(roi_id)
-
-    def on_roi_spin_changed(self) -> None:
-        if self.app._block_roi_spin or not self.app._selected_roi_id:
-            return
-        for roi in self.roi_manager.all_rois():
-            if roi.id == self.app._selected_roi_id:
-                new_rect = QRectF(
-                    self.app._roi_x_spin.value(), self.app._roi_y_spin.value(),
-                    self.app._roi_w_spin.value(), self.app._roi_h_spin.value(),
-                )
-                roi.x = int(new_rect.x())
-                roi.y = int(new_rect.y())
-                roi.w = int(new_rect.width())
-                roi.h = int(new_rect.height())
-                self.canvas.update_roi_rect(self.app._selected_roi_id, new_rect)
-                self.app._refresh_roi_list()
-                break
-
-    def update_roi_spins(self) -> None:
-        if not self.app._selected_roi_id:
-            return
-        for roi in self.roi_manager.all_rois():
-            if roi.id == self.app._selected_roi_id:
-                self.app._block_roi_spin = True
-                self.app._roi_x_spin.setValue(roi.x)
-                self.app._roi_y_spin.setValue(roi.y)
-                self.app._roi_w_spin.setValue(roi.w)
-                self.app._roi_h_spin.setValue(roi.h)
-                self.app._block_roi_spin = False
-                break
 
     def on_roi_added(self, roi: ROIModel) -> None:
         self.app._refresh_roi_list()

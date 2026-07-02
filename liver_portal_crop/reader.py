@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import io
+import logging
 import os
+import struct
 import sys
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import NamedTuple
 
 import numpy as np
 from ctypes import *
+from PIL import Image as PILImage
 
 # ── 加载 DecodeSdpcDll.dll ──────────────────────────────────────────
 # 注意：必须在 import sdpc 之前捕获 CWD，
@@ -49,7 +55,38 @@ os.chdir(_old_cwd)
 # ── DLL 函数签名 ────────────────────────────────────────────────────
 
 # SqSdpcInfo 结构体引用
-from sdpc.Sdpc_struct import SqSdpcInfo  # type: ignore
+from sdpc.Sdpc_struct import (  # type: ignore
+    SqSdpcInfo, SqPicHead, SqPersonInfo, SqExtraInfo,
+)
+
+
+# ── MacrographInfo 结构体（sdpc 包未导出，自行定义） ─────────────────
+# 参照 ImageViewer 反编译的 Slide.Sdpc.MacrographInfo
+class _SqMacrographInfo(Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("flag", c_ushort),
+        ("rgb", c_uint64),
+        ("width", c_uint32),
+        ("height", c_uint32),
+        ("chance", c_uint32),
+        ("step", c_uint32),
+        ("rgbSize", c_uint64),
+        ("encodeSize", c_uint64),
+        ("quality", c_ubyte),
+        ("nextLayerOffset", c_uint64),
+        ("headSpace_1", c_uint32),
+        ("headSpace_2", c_uint32),
+        ("headSpace", c_ubyte * 64),
+    ]
+
+# ── SDPC 文件格式结构体大小（C# DLL 实际写入的字节数） ──────────────
+# Python ctypes 的 SqPicHead 缺少 vender(1B) + 2B headSpace，
+# sizeof(SqPicHead)=153 但文件实际写入 160 字节。
+# 必须使用这些常量计算文件偏移，而非 ctypes sizeof。
+_PIC_HEAD_FILE_SIZE = 160        # C# Marshal.SizeOf(typeof(PicHead))
+_PERSON_INFO_FILE_SIZE = 6808    # C# Marshal.SizeOf(typeof(PersonInfo))
+_MACRO_INFO_FILE_SIZE = sizeof(_SqMacrographInfo)  # 121B, 与 C# 一致
 
 _so.SqOpenSdpc.restype = POINTER(SqSdpcInfo)
 _so.SqOpenSdpc.argtypes = [c_char_p]
@@ -127,6 +164,7 @@ class SDPCReader:
         self._full_w, self._full_h = self._dims[0]
         self._thumbnail: np.ndarray | None = None
         self._thumbnail_size: tuple[int, int] | None = None
+        self._macrographs: list[np.ndarray] | None = None  # 标签图/宏观图缓存
 
     @property
     def path(self) -> Path:
@@ -171,6 +209,292 @@ class SDPCReader:
             h, w = self.thumbnail.shape[:2]
             self._thumbnail_size = (w, h)
         return self._thumbnail_size
+
+    # ── 元数据读取 ─────────────────────────────────────────────────
+
+    @property
+    def metadata(self) -> dict:
+        """返回 SDPC 文件的全部元数据（PicHead / PersonInfo / ExtraInfo）。"""
+        if self._handle is None:
+            return {}
+
+        head = self._handle.contents.picHead.contents
+        info: dict = {
+            "pic_head": {
+                "version": bytes(head.version).split(b"\x00")[0].decode("ascii", errors="replace"),
+                "file_size": head.fileSize,
+                "src_width": head.srcWidth,
+                "src_height": head.srcHeight,
+                "slice_width": head.sliceWidth,
+                "slice_height": head.sliceHeight,
+                "hierarchy": head.hierarchy,
+                "scale": head.scale,
+                "ruler": head.ruler,
+                "rate": head.rate,
+                "quality": head.quality,
+                "slice_format": head.sliceFormat,
+                "person_infor": head.personInfor,
+                "macrograph": head.macrograph,
+            },
+            "person_info": None,
+            "extra_info": None,
+        }
+
+        # PersonInfo（仅当 personInfor == 1）
+        if head.personInfor == 1 and self._handle.contents.personInfo:
+            try:
+                pi = self._handle.contents.personInfo.contents
+                info["person_info"] = {
+                    "pathology_id": _decode_ub(pi.pathologyID),
+                    "name": _decode_ub(pi.name),
+                    "sex": pi.sex,
+                    "age": pi.age,
+                    "departments": _decode_ub(pi.departments),
+                    "hospital": _decode_ub(pi.hospital),
+                    "submitted_samples": _decode_ub(pi.submittedSamples),
+                    "clinical_diagnosis": _decode_ub(pi.clinicalDiagnosis),
+                    "pathological_diagnosis": _decode_ub(pi.pathologicalDiagnosis),
+                    "report_date": _decode_ub(pi.reportDate),
+                    "attending_doctor": _decode_ub(pi.attendingDoctor),
+                    "remark": _decode_ub(pi.remark),
+                }
+            except Exception:
+                pass
+
+        # ExtraInfo（仅当 extraOffset != 0）
+        if head.extraOffset != 0 and self._handle.contents.extra:
+            try:
+                ex = self._handle.contents.extra.contents
+                info["extra_info"] = {
+                    "model": _decode_ub(ex.model),
+                    "serial": _decode_ub(ex.serial),
+                    "barcode": _decode_ub(ex.barCode),
+                    "fusion_layer": ex.fusionLayer,
+                    "step": ex.step,
+                    "scan_time": ex.scanTime,
+                    "step_time": [ex.stepTime[i] for i in range(10)],
+                    "camera_gamma": ex.cameraGamma,
+                    "camera_exposure": ex.cameraExposure,
+                    "camera_gain": ex.cameraGain,
+                }
+            except Exception:
+                pass
+
+        return info
+
+    # ── 标签图 / 宏观图（内嵌 macrograph） ────────────────────────
+
+    @property
+    def label_image(self) -> np.ndarray | None:
+        """标签图（macrograph[0]），RGB numpy array (H, W, 3)。无则返回 None。"""
+        imgs = self._read_macrographs()
+        return imgs[0] if imgs and len(imgs) > 0 else None
+
+    @property
+    def macro_image(self) -> np.ndarray | None:
+        """宏观图（macrograph[1]），RGB numpy array (H, W, 3)。无则返回 None。"""
+        imgs = self._read_macrographs()
+        return imgs[1] if imgs and len(imgs) > 1 else None
+
+    def _read_macrographs(self) -> list[np.ndarray] | None:
+        """从 DLL handle 的 macrograph 指针读取内嵌标签图/宏观图。
+
+        SqImageInfo 内存布局（pack=1, 64-bit）：
+          offset  0: stream    (char*, 8B) — JPEG 编码数据指针
+          offset  8: bgr       (char*, 8B) — 解码后的 BGR 像素指针
+          offset 16: width     (int,   4B)
+          offset 20: height    (int,   4B)
+          offset 24: channel   (int,   4B)
+          offset 28: format    (ubyte, 1B)
+          offset 29: colorSpace(ubyte[4], 4B)
+          offset 33: streamSize(int,   4B) — JPEG 数据大小
+
+        由于 sdpc 包的 SqImageInfo 有 _fileds_ 拼写错误，无法通过 ctypes
+        访问字段名，因此直接用 string_at 按偏移读取原始内存。
+        """
+        if self._macrographs is not None:
+            return self._macrographs
+
+        head = self._handle.contents.picHead.contents
+        macro_count = head.macrograph
+        if macro_count <= 0:
+            self._macrographs = []
+            return self._macrographs
+
+        images: list[np.ndarray] = []
+
+        try:
+            macro_arr = self._handle.contents.macrograph  # POINTER(POINTER(SqImageInfo))
+            if not macro_arr:
+                logger.debug("macrograph 指针为空，回退到文件读取")
+                return self._try_read_macrographs_from_file()
+
+            for i in range(macro_count):
+                entry = macro_arr[i]  # POINTER(SqImageInfo)
+                if not entry:
+                    logger.debug("macrograph[%d] 为空指针", i)
+                    continue
+
+                # 获取 SqImageInfo 结构体在内存中的地址
+                entry_addr = cast(entry, c_void_p).value
+                if not entry_addr:
+                    continue
+
+                # 读取 37 字节原始内存
+                buf = string_at(entry_addr, 37)
+
+                # 按偏移解析各字段
+                w = int.from_bytes(buf[16:20], "little", signed=True)
+                h = int.from_bytes(buf[20:24], "little", signed=True)
+                ch = int.from_bytes(buf[24:28], "little", signed=True)
+
+                # 读取 bgr 指针值（offset 8, 8 bytes）
+                bgr_ptr = int.from_bytes(buf[8:16], "little")
+                # 读取 stream 指针值（offset 0, 8 bytes）
+                stream_ptr = int.from_bytes(buf[0:8], "little")
+                # 读取 streamSize（offset 33, 4 bytes）
+                stream_size = int.from_bytes(buf[33:37], "little", signed=True)
+                # 备用的 streamSize（offset 29，无 colorSpace 的情况）
+                alt_stream_size = int.from_bytes(buf[29:33], "little", signed=True)
+
+                logger.debug(
+                    "macrograph[%d]: %dx%d ch=%d bgr=0x%x stream=0x%x "
+                    "streamSize=%d altStreamSize=%d",
+                    i, w, h, ch, bgr_ptr, stream_ptr, stream_size, alt_stream_size,
+                )
+
+                if w <= 0 or h <= 0 or w > 50000 or h > 50000:
+                    logger.debug("macrograph[%d]: 维度异常，跳过", i)
+                    continue
+
+                img = None
+
+                # 策略 1: 从 bgr 指针读取原始像素数据（DLL 已解码）
+                if bgr_ptr and ch in (3, 4) and w * h * ch < 200_000_000:
+                    try:
+                        pixel_size = w * h * ch
+                        pixel_data = string_at(bgr_ptr, pixel_size)
+                        arr = np.frombuffer(pixel_data, dtype=np.uint8).reshape(h, w, ch)
+                        if ch == 4:
+                            # BGRA → RGB
+                            img = arr[..., [2, 1, 0]].copy()
+                        else:
+                            # BGR → RGB
+                            img = arr[..., ::-1].copy()
+                        logger.debug("macrograph[%d]: 从 bgr 指针读取成功 (%dx%d)", i, w, h)
+                    except Exception as e:
+                        logger.debug("macrograph[%d]: bgr 读取失败: %s", i, e)
+                        img = None
+
+                # 策略 2: 从 stream 指针读取 JPEG 数据
+                if img is None and stream_ptr and 0 < stream_size < 100_000_000:
+                    try:
+                        jpeg_data = string_at(stream_ptr, stream_size)
+                        pil_img = PILImage.open(io.BytesIO(jpeg_data))
+                        pil_img = pil_img.convert("RGB")
+                        img = np.array(pil_img)
+                        logger.debug("macrograph[%d]: 从 stream JPEG 读取成功 (size=%d)", i, stream_size)
+                    except Exception as e:
+                        logger.debug("macrograph[%d]: stream JPEG 读取失败 (size=%d): %s", i, stream_size, e)
+                        img = None
+
+                # 策略 3: streamSize 可能在 offset 29（无 colorSpace 的旧版 DLL）
+                if img is None and stream_ptr and 0 < alt_stream_size < 100_000_000:
+                    try:
+                        jpeg_data = string_at(stream_ptr, alt_stream_size)
+                        pil_img = PILImage.open(io.BytesIO(jpeg_data))
+                        pil_img = pil_img.convert("RGB")
+                        img = np.array(pil_img)
+                        logger.debug("macrograph[%d]: 从 alt stream JPEG 读取成功 (size=%d)", i, alt_stream_size)
+                    except Exception as e:
+                        logger.debug("macrograph[%d]: alt stream JPEG 读取失败 (size=%d): %s", i, alt_stream_size, e)
+                        img = None
+
+                if img is not None:
+                    images.append(img)
+
+        except Exception:
+            logger.debug("DLL handle macrograph 读取异常", exc_info=True)
+
+        # 如果 DLL handle 方式失败，回退到二进制文件读取
+        if not images:
+            logger.debug("回退到文件二进制读取")
+            images = self._try_read_macrographs_from_file()
+
+        logger.debug("macrograph 读取完成: %d 张图像", len(images))
+        self._macrographs = images
+        return self._macrographs
+
+    def _try_read_macrographs_from_file(self) -> list[np.ndarray]:
+        """从 SDPC 二进制文件中读取 macrograph（回退方案）。
+
+        文件布局（参照 ImageViewer SdpcImage.cs）：
+          PicHead → PersonInfo → MacrographInfo[0] → Data[0]
+                                       → MacrographInfo[1] → Data[1]
+        """
+        head = self._handle.contents.picHead.contents
+        if head.personInfor != 1 or head.macrograph != 2:
+            return []
+
+        pic_head_offset = head.headSize
+        if pic_head_offset <= 0:
+            pic_head_offset = _PIC_HEAD_FILE_SIZE
+
+        try:
+            with open(self._path, "rb") as f:
+                f.seek(pic_head_offset)
+                pi_data = f.read(_PERSON_INFO_FILE_SIZE)
+                if len(pi_data) < _PERSON_INFO_FILE_SIZE:
+                    return []
+
+                pi_flag = int.from_bytes(pi_data[0:2], "little")
+                if pi_flag != 18768:
+                    return []
+
+                nex_offset_pos = 4536
+                macro_base = int.from_bytes(
+                    pi_data[nex_offset_pos:nex_offset_pos + 8], "little"
+                )
+                if macro_base <= 0:
+                    return []
+
+                images: list[np.ndarray] = []
+                offset = macro_base
+
+                for _ in range(head.macrograph):
+                    f.seek(offset)
+                    mi_data = f.read(_MACRO_INFO_FILE_SIZE)
+                    if len(mi_data) < _MACRO_INFO_FILE_SIZE:
+                        break
+                    mi = _SqMacrographInfo()
+                    memmove(addressof(mi), mi_data, _MACRO_INFO_FILE_SIZE)
+
+                    if mi.flag != 18765:
+                        break
+
+                    data_offset = offset + _MACRO_INFO_FILE_SIZE
+                    encode_size = mi.encodeSize
+                    if encode_size <= 0 or encode_size > 100_000_000:
+                        break
+
+                    f.seek(data_offset)
+                    jpeg_data = f.read(int(encode_size))
+                    if len(jpeg_data) < encode_size:
+                        break
+
+                    try:
+                        img = PILImage.open(io.BytesIO(jpeg_data))
+                        img = img.convert("RGB")
+                        images.append(np.array(img))
+                    except Exception:
+                        images.append(np.zeros((1, 1, 3), dtype=np.uint8))
+
+                    offset = mi.nextLayerOffset
+
+                return images
+
+        except Exception:
+            return []
 
     def extract_region(
         self,
@@ -280,6 +604,24 @@ class SDPCReader:
 
 
 # ── 内部工具 ────────────────────────────────────────────────────────
+
+def _decode_ub(arr) -> str:
+    """将 c_ubyte 数组解码为字符串（GBK 优先，UTF-8 回退）。"""
+    try:
+        raw = bytes(arr)
+    except Exception:
+        return ""
+    # 截断到第一个 null byte
+    idx = raw.find(b"\x00")
+    if idx >= 0:
+        raw = raw[:idx]
+    if not raw:
+        return ""
+    try:
+        return raw.decode("gbk")
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
 
 def _parse_layer_info(raw_ptr: POINTER(c_char)) -> str:
     """将 GetLayerInfo 返回的 c_char 指针解析为字符串。"""

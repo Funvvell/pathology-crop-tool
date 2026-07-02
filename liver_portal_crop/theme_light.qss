@@ -540,6 +540,12 @@ QListWidget::item:selected:hover {
     border-radius: 10px;
 }
 
+#labelImage {
+    background: #ffffff;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+}
+
 /* ══════════════════════════════════════════
    分析工具组 — lg(10px) 圆角容器
    ══════════════════════════════════════════ */
