@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from collections import OrderedDict
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -609,7 +612,7 @@ class WSICanvas(QGraphicsView):
 
                 self._add_tile_item(key, pix)
             except Exception:
-                pass
+                logger.debug("tile 加载失败: level=%s, tx=%s, ty=%s", key[0] if len(key) > 1 else key, key[1] if len(key) > 1 else '', key[2] if len(key) > 1 else '', exc_info=True)
 
         # 第二步：移除不再需要的 tiles（比 visible 区域更远的才移除）
         visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
