@@ -196,9 +196,9 @@ class ROIController(BaseController):
             self.app._roi_list.addItem(item)
             if selected_id and roi.id == selected_id:
                 restore_row = i
+        self.app._roi_list.blockSignals(False)
         if restore_row >= 0:
             self.app._roi_list.setCurrentRow(restore_row)
-        self.app._roi_list.blockSignals(False)
 
     def _update_roi_list_item_text(self, roi_id: str, roi: ROIModel) -> None:
         """原地更新单个 ROI 的列表项文本，不触发 clear+rebuild。"""

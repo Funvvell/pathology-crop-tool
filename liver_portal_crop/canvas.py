@@ -711,21 +711,16 @@ class WSICanvas(QGraphicsView):
         while target is not None and not isinstance(target, ROIRectItem):
             target = target.parentItem()
         if target is not None and isinstance(target, ROIRectItem):
-            # Block scene's selectionChanged so super().mousePressEvent
-            # can't auto-select a different ROI during the drag setup.
-            self._scene.blockSignals(True)
-            self._scene.clearSelection()
-            target.setSelected(True)
-            # Guard: prevent other ROIs from being selected/moved during drag
-            self._drag_others = [i for i in self._roi_items.values() if i is not target]
-            self._drag_guard_items = set(self._drag_others)
-            self._drag_guard_active = True
-            for item in self._drag_others:
-                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                # 普通点击：仅选中此 ROI（blockSignals 避免 clearSelection 连锁）
+                self._scene.blockSignals(True)
+                self._scene.clearSelection()
+                target.setSelected(True)
+                self._scene.blockSignals(False)
+            # Ctrl+点击：由 Qt 自然切换选中状态，支持多选
             self._drag_roi_mode = self.dragMode()
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             super().mousePressEvent(event)
-            self._scene.blockSignals(False)
             return
         super().mousePressEvent(event)
 
