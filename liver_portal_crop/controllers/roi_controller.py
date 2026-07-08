@@ -123,7 +123,8 @@ class ROIController(BaseController):
                 roi.w = int(new_rect.width())
                 roi.h = int(new_rect.height())
                 roi.angle = round(angle, 2)
-                self.app._refresh_roi_list()
+                # 原地更新列表项文本，避免 clear+rebuild 导致闪烁
+                self._update_roi_list_item_text(roi_id, roi)
                 break
         self.app._notify_preview_rois_changed()
 
@@ -173,17 +174,39 @@ class ROIController(BaseController):
                                      angle=roi.angle)
 
     def refresh_roi_list(self) -> None:
+        # 记住当前选中的 ROI ID，rebuild 后恢复
+        selected_id = None
+        cur = self.app._roi_list.currentItem()
+        if cur:
+            selected_id = cur.data(Qt.ItemDataRole.UserRole)
+
+        self.app._roi_list.blockSignals(True)
         self.app._roi_list.clear()
         if self.current_slide is None:
+            self.app._roi_list.blockSignals(False)
             return
         rois = self.roi_manager.get_slide_rois(self.current_slide)
-        for roi in rois:
+        restore_row = -1
+        for i, roi in enumerate(rois):
             item = QListWidgetItem(
                 f"ROI ({roi.x}, {roi.y}) "
                 f"{roi.w}×{roi.h}"
             )
             item.setData(Qt.ItemDataRole.UserRole, roi.id)
             self.app._roi_list.addItem(item)
+            if selected_id and roi.id == selected_id:
+                restore_row = i
+        if restore_row >= 0:
+            self.app._roi_list.setCurrentRow(restore_row)
+        self.app._roi_list.blockSignals(False)
+
+    def _update_roi_list_item_text(self, roi_id: str, roi: ROIModel) -> None:
+        """原地更新单个 ROI 的列表项文本，不触发 clear+rebuild。"""
+        for i in range(self.app._roi_list.count()):
+            item = self.app._roi_list.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == roi_id:
+                item.setText(f"ROI ({roi.x}, {roi.y}) {roi.w}×{roi.h}")
+                break
 
     def delete_selected_roi(self) -> None:
         item = self.app._roi_list.currentItem()
