@@ -282,7 +282,7 @@ class ROIRectItem(QGraphicsRectItem):
            and not self._block_sync:
             self._update_handle_positions()
             if hasattr(value, 'x') and self._on_changed:
-                r = self.mapRectToScene(self.rect())
+                r = self.rect().translated(self.pos())
                 self._on_changed(self._roi_id, r, self.rotation())
         return super().itemChange(change, value)
 
