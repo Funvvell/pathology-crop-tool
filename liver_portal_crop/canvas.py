@@ -613,16 +613,16 @@ class WSICanvas(QGraphicsView):
                 self._add_tile_item(key, pix)
                 continue
 
-            # 磁盘读取：限制每轮数量，剩余由 timer 下一轮继续
+            # 磁盘读取：限制每轮数量，剩余由 singleShot(0) 下一轮继续
             if disk_loaded >= MAX_TILES_PER_CYCLE:
-                self._render_timer.start(16)  # ≈60fps，下一帧继续
+                QTimer.singleShot(0, self._render_visible_tiles)
                 break
 
             _level, tx, ty, tw, th = key
             try:
                 region = r._read_level_region(_level, tx, ty, tw, th)
-                img_bytes = region.tobytes()
-                img = QImage(img_bytes, tw, th, tw * 3,
+                # 直接用 numpy buffer 构造 QImage，省去 tobytes() 的 3MB 拷贝
+                img = QImage(region.data, tw, th, tw * 3,
                              QImage.Format.Format_RGB888).copy()
                 if img.isNull():
                     continue
