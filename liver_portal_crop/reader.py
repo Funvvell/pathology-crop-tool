@@ -575,8 +575,9 @@ class SDPCReader:
                 )
                 if ret != 0:
                     raise SDPCReadError(f"SqGetRoiRgbOfSpecifyLayer 返回 {ret}")
-                arr = np.ctypeslib.as_array(rgb_pos, (lh, lw, 3)).copy()
-                rgb = arr[..., ::-1].copy()
+                # BGR→RGB 反转 + 从 DLL 内存拷贝到独立 numpy 数组（一步完成）
+                arr = np.ctypeslib.as_array(rgb_pos, (lh, lw, 3))
+                rgb = np.ascontiguousarray(arr[..., ::-1])
                 return rgb
             finally:
                 _so.Dispose(rgb_pos)
