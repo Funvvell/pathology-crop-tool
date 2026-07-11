@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from liver_portal_crop.reader import SDPCReader
 from liver_portal_crop.constants import (
     TILE_SIZE, MAX_TILE_CACHE, RENDER_DEBOUNCE_MS, PRELOAD_MARGIN,
-    MIN_ROI_SIZE, ROI_ID_LENGTH,
+    MIN_ROI_SIZE, ROI_ID_LENGTH, MAX_TILES_PER_CYCLE,
 )
 
 
@@ -314,7 +314,7 @@ class WSICanvas(QGraphicsView):
         )
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setViewportUpdateMode(
-            QGraphicsView.ViewportUpdateMode.FullViewportUpdate
+            QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate
         )
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -350,6 +350,19 @@ class WSICanvas(QGraphicsView):
         self._render_timer = QTimer()
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render_visible_tiles)
+
+        # 交互期间关闭高质量渲染，停止后恢复
+        self._smooth_restore_timer = QTimer()
+        self._smooth_restore_timer.setSingleShot(True)
+        self._smooth_restore_timer.setInterval(300)
+        self._smooth_restore_timer.timeout.connect(
+            lambda: self._set_fast_rendering(False)
+        )
+
+    def _set_fast_rendering(self, fast: bool) -> None:
+        """fast=True: 关闭抗锯齿+平滑缩放（平移/缩放时）；False: 恢复高质量。"""
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not fast)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing, not fast)
 
     # ── 公共接口 ──────────────────────────────────────
 
@@ -541,7 +554,8 @@ class WSICanvas(QGraphicsView):
         return best
 
     def _render_visible_tiles(self) -> None:
-        """按需加载可见区域的 tiles。"""
+        """按需加载可见区域的 tiles（每轮最多 MAX_TILES_PER_CYCLE 个新 tile，
+        剩余由 timer 分批加载，避免主线程长时间阻塞）。"""
         if self._reader is None:
             return
 
@@ -556,10 +570,10 @@ class WSICanvas(QGraphicsView):
 
         scale = r.levels[level].downsample
 
-        # 可见区域（level 0 坐标），向外扩展 30% 做预加载 margin
+        # 可见区域（level 0 坐标），向外扩展 margin 做预加载
         view_rect = self.viewport().rect()
-        margin_x = view_rect.width() * 0.3
-        margin_y = view_rect.height() * 0.3
+        margin_x = view_rect.width() * PRELOAD_MARGIN
+        margin_y = view_rect.height() * PRELOAD_MARGIN
         margin_rect = view_rect.adjusted(-margin_x, -margin_y,
                                           margin_x, margin_y)
         scene_rect = self.mapToScene(margin_rect).boundingRect()
@@ -587,7 +601,9 @@ class WSICanvas(QGraphicsView):
                 key = (level, tx, ty, tw, th)
                 needed_tiles.add(key)
 
-        # 第一步：加载需要的 tiles（先于清理，避免空窗期）
+        # 第一步：加载需要的 tiles
+        # 缓存命中的 tile 直接加载（快）；磁盘读取每轮最多 MAX_TILES_PER_CYCLE 个
+        disk_loaded = 0
         for key in needed_tiles:
             if key in self._tile_items:
                 continue  # 已加载
@@ -596,6 +612,11 @@ class WSICanvas(QGraphicsView):
                 self._tile_cache[key] = pix
                 self._add_tile_item(key, pix)
                 continue
+
+            # 磁盘读取：限制每轮数量，剩余由 timer 下一轮继续
+            if disk_loaded >= MAX_TILES_PER_CYCLE:
+                self._render_timer.start(16)  # ≈60fps，下一帧继续
+                break
 
             _level, tx, ty, tw, th = key
             try:
@@ -612,8 +633,10 @@ class WSICanvas(QGraphicsView):
                     self._tile_cache.popitem(last=False)
 
                 self._add_tile_item(key, pix)
+                disk_loaded += 1
             except Exception:
-                logger.debug("tile 加载失败: level=%s, tx=%s, ty=%s", key[0] if len(key) > 1 else key, key[1] if len(key) > 1 else '', key[2] if len(key) > 1 else '', exc_info=True)
+                logger.debug("tile 加载失败: level=%s, tx=%s, ty=%s",
+                             key[0], key[1], key[2], exc_info=True)
 
         # 第二步：移除不再需要的 tiles（比 visible 区域更远的才移除）
         visible_scene = self.mapToScene(self.viewport().rect()).boundingRect()
@@ -621,7 +644,6 @@ class WSICanvas(QGraphicsView):
             if key == ('thumb',):
                 continue
             if key not in needed_tiles:
-                # 检查是否在可视区域内或紧邻
                 _l, tx, ty, tw, th = key
                 key_rect = QRectF(tx * scale, ty * scale,
                                   tw * scale, th * scale)
@@ -681,6 +703,11 @@ class WSICanvas(QGraphicsView):
         if self._roi_mode and self._frame_visible:
             self._update_frame_pos(self.mapToScene(event.pos()))
         super().mouseMoveEvent(event)
+        # 平移期间渐进加载瓦片 + 关闭高质量渲染
+        if self._drag_roi_mode is None:
+            self._set_fast_rendering(True)
+            self._smooth_restore_timer.start()
+        self._render_timer.start(100)
 
     def mousePressEvent(self, event):
         # 右键拖拽旋转浮选框（ROI 模式下）
@@ -744,12 +771,15 @@ class WSICanvas(QGraphicsView):
             self._drag_roi_mode = None
         self._emit_viewport()
         self._render_timer.start(100)
+        self._smooth_restore_timer.start()
 
     def wheelEvent(self, event):
         scale_factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorUnderMouse
         )
+        self._set_fast_rendering(True)
+        self._smooth_restore_timer.start()
         self.scale(scale_factor, scale_factor)
         self._emit_viewport()
         # 缩放后异步刷新 tiles

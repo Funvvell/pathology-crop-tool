@@ -5,6 +5,7 @@ TILE_SIZE = 1024              # tile 读取尺寸
 MAX_TILE_CACHE = 512          # LRU 缓存最大 tile 数
 RENDER_DEBOUNCE_MS = 200      # 渲染防抖延迟 (ms)
 PRELOAD_MARGIN = 0.3          # 预加载 margin 比例
+MAX_TILES_PER_CYCLE = 4       # 每次渲染循环最多加载的新 tile 数（避免主线程长时间阻塞）
 
 # ROI 标注
 ROI_ID_LENGTH = 12            # UUID hex 截断长度
