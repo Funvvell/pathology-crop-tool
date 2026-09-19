@@ -1,0 +1,13 @@
+# 可选依赖 — DeepLIIF AI 推理（PyTorch，约 5GB）
+#
+#   pip install -r requirements-ai.txt
+#
+# 核心功能（浏览 / 裁剪 / 组织检测 / IHC 热点）无需这些包。
+# 未安装时 AI 相关按钮会自动禁用并提示。
+#
+# 本文件与 pyproject.toml 的 [project.optional-dependencies.ai] 保持一致。
+
+torch>=2.0,<3
+torchvision>=0.15,<1
+deepliif>=1.2.6,<2
+requests>=2.28,<3

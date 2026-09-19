@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QRectF, QThread, QTimer, QObject, Signal
 from PySide6.QtWidgets import QDialog
-from PySide6.QtGui import QAction, QImage, QPixmap, QTransform
+from PySide6.QtGui import QAction, QImage, QPixmap, QTransform, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMenuBar, QMessageBox,
@@ -27,6 +27,8 @@ from liver_portal_crop.theme import load_theme
 from liver_portal_crop.canvas import WSICanvas
 from liver_portal_crop.dialogs import SettingsDialog, ImageViewDialog, SliceInfoDialog
 from liver_portal_crop.exporter import BatchExporter, CropConfig
+from liver_portal_crop.export_queue import ExportQueueController
+from liver_portal_crop.export_queue_dialog import ExportQueueDialog
 from liver_portal_crop.navigator import NavigationWidget
 from liver_portal_crop.tissue_detect import (
     detect_tissue, tissue_regions_to_rois, tissue_regions_to_rois_grid, TissueDialog,
@@ -438,6 +440,9 @@ class MainWindow(QMainWindow):
         self._preview_refresh_timer.setSingleShot(True)
         self._preview_refresh_timer.setInterval(PREVIEW_REFRESH_MS)
         self._preview_refresh_timer.timeout.connect(self._do_preview_refresh)
+        self._export_queue = ExportQueueController(self)
+        self._export_queue_dialog: ExportQueueDialog | None = None
+        self._shortcuts: list[QShortcut] = []
 
         # ── ImageJ 桥接状态 ──
         self._imagej_config_path = SESSION_DIR / "imagej_config.json"
@@ -581,6 +586,12 @@ class MainWindow(QMainWindow):
         self._export_btn.setObjectName("exportBtn")
         self._export_btn.clicked.connect(self._start_export)
         tbar.addWidget(self._export_btn)
+
+        self._export_queue_btn = QPushButton("导出队列")
+        self._export_queue_btn.setObjectName("exportBtn")
+        self._export_queue_btn.setToolTip("按文件排队导出，支持进度、取消与失败重试")
+        self._export_queue_btn.clicked.connect(self._show_export_queue)
+        tbar.addWidget(self._export_queue_btn)
 
         self._preview_win_btn = QPushButton("ROI 预览")
         self._preview_win_btn.setToolTip("切换到 ROI 缩略图预览视图")
@@ -804,7 +815,13 @@ class MainWindow(QMainWindow):
         roi_list_header = QLabel("ROI 列表")
         roi_list_header.setObjectName("sectionHeader")
         right_layout.addWidget(roi_list_header)
+        self._roi_info_label = QLabel("未选中 ROI | 当前切片 0 个")
+        self._roi_info_label.setObjectName("roiInfoLabel")
+        self._roi_info_label.setWordWrap(True)
+        right_layout.addWidget(self._roi_info_label)
         self._roi_list = QListWidget()
+        self._roi_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self._roi_list.itemDoubleClicked.connect(self._on_roi_list_double_clicked)
         right_layout.addWidget(self._roi_list)
 
         roi_btn_layout = QVBoxLayout()
@@ -812,6 +829,9 @@ class MainWindow(QMainWindow):
         self._delete_roi_btn = QPushButton("删除选中 ROI")
         self._delete_roi_btn.setObjectName("dangerBtn")
         self._delete_roi_btn.clicked.connect(self._delete_selected_roi)
+        self._edit_roi_btn = QPushButton("编辑 ROI 坐标")
+        self._edit_roi_btn.setObjectName("toolActionBtn")
+        self._edit_roi_btn.clicked.connect(self._edit_selected_roi)
         self._clear_current_btn = QPushButton("清空当前文件")
         self._clear_current_btn.setObjectName("dangerBtn")
         self._clear_current_btn.clicked.connect(self._clear_current_roi)
@@ -819,6 +839,7 @@ class MainWindow(QMainWindow):
         self._clear_all_btn.setObjectName("dangerBtn")
         self._clear_all_btn.clicked.connect(self._clear_all_rois)
         roi_btn_layout.addWidget(self._delete_roi_btn)
+        roi_btn_layout.addWidget(self._edit_roi_btn)
         roi_btn_layout.addWidget(self._clear_current_btn)
         roi_btn_layout.addWidget(self._clear_all_btn)
         right_layout.addLayout(roi_btn_layout)
@@ -831,16 +852,23 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._file_list.currentRowChanged.connect(self._on_file_selected)
         self._roi_list.currentRowChanged.connect(self._on_roi_list_selected)
+        self._roi_list.itemSelectionChanged.connect(self._on_roi_list_selection_changed)
         self._roi_manager.roi_added.connect(self._on_roi_added)
         self._roi_manager.roi_removed.connect(self._on_roi_removed)
+        self._roi_manager.roi_updated.connect(self._on_roi_updated)
+        self._roi_manager.roi_cleared.connect(self._on_roi_cleared)
         self._canvas.roi_created.connect(self._on_canvas_roi_created)
         self._canvas.roi_selected.connect(self._on_canvas_roi_selected)
         self._canvas.roi_rect_changed.connect(self._on_roi_rect_changed)
+        self._canvas.roi_edit_finished.connect(self._on_roi_edit_finished)
         self._canvas.roi_selection_changed.connect(self._on_roi_selection_changed)
+        self._canvas.roi_selection_multi.connect(self._on_roi_selection_multi)
+        self._canvas.roi_batch_delete.connect(self._on_roi_batch_delete)
         self._canvas.viewport_changed.connect(self._nav.update_viewport)
         self._canvas.frame_angle_changed.connect(self._on_canvas_frame_angle_changed)
         self._nav.navigated.connect(self._on_nav_clicked)
         self._label_img.installEventFilter(self)
+        self._setup_shortcuts()
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
@@ -854,7 +882,28 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("文件")
         file_menu.addAction("添加文件...", self._add_files)
         file_menu.addSeparator()
+        file_menu.addAction("导出队列...", self._show_export_queue)
+        file_menu.addSeparator()
         file_menu.addAction("退出", self.close)
+
+        edit_menu = menubar.addMenu("编辑")
+        edit_menu.addAction("撤销 ROI", self._roi_undo)
+        edit_menu.actions()[-1].setShortcut(QKeySequence.StandardKey.Undo)
+        edit_menu.addAction("重做 ROI", self._roi_redo)
+        edit_menu.actions()[-1].setShortcut(QKeySequence.StandardKey.Redo)
+        edit_menu.addSeparator()
+        edit_menu.addAction("复制选中 ROI", self._copy_selected_rois)
+        edit_menu.addAction("全选 ROI", self._select_all_rois)
+        edit_menu.addAction("编辑 ROI 坐标...", self._edit_selected_roi)
+
+        roi_nav_menu = menubar.addMenu("ROI 导航")
+        roi_nav_menu.addAction("下一个 ROI", lambda: self._roi_controller.navigate_roi(1))
+        roi_nav_menu.addAction("上一个 ROI", lambda: self._roi_controller.navigate_roi(-1))
+        roi_nav_menu.addAction("下一个文件", lambda: self._roi_controller.navigate_file(1))
+        roi_nav_menu.addAction("上一个文件", lambda: self._roi_controller.navigate_file(-1))
+        roi_nav_menu.addSeparator()
+        roi_nav_menu.addAction("适配选中 ROI", self._roi_controller.fit_view)
+        roi_nav_menu.addAction("适配整张切片", self._roi_controller.fit_slide)
 
         view_menu = menubar.addMenu("显示")
         self._theme_action = QAction("浅色模式", self)
@@ -878,16 +927,110 @@ class MainWindow(QMainWindow):
         analysis_menu.addAction("安装/检查 PyImageJ...", self._install_imagej_from_menu)
 
         help_menu = menubar.addMenu("帮助")
+        help_menu.addAction("快捷键", self._show_shortcut_help)
         help_menu.addAction("关于", lambda: QMessageBox.about(
             self, "关于",
-            "病理裁剪工具 v0.7.1\n\n"
+            "病理裁剪工具 v0.8.1\n\n"
             "作者：Funvvell\n\n"
             "功能：\n"
             "• SDPC 病理切片浏览与 ROI 标注\n"
+            "• 导出队列（多文件 / 重试 / 汇总）\n"
+            "• ROI 撤销重做 · 多选 · 导航 · 精确编辑\n"
             "• 汇管区自动检测与批量裁剪导出\n"
             "• IHC 阳性热点检测与 ROI 自动生成\n"
             "• DeepLIIF 免疫组化分析",
         ))
+
+    def _setup_shortcuts(self) -> None:
+        def add(seq: str, slot) -> None:
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            sc.activated.connect(slot)
+            self._shortcuts.append(sc)
+
+        add("Ctrl+Z", self._roi_undo)
+        add("Ctrl+Y", self._roi_redo)
+        add("Ctrl+Shift+Z", self._roi_redo)
+        add("Ctrl+C", self._copy_selected_rois)
+        add("Ctrl+D", self._copy_selected_rois)
+        add("Ctrl+A", self._select_all_rois)
+        add("N", lambda: self._roi_controller.navigate_roi(1))
+        add("P", lambda: self._roi_controller.navigate_roi(-1))
+        add("Ctrl+Right", lambda: self._roi_controller.navigate_roi(1))
+        add("Ctrl+Left", lambda: self._roi_controller.navigate_roi(-1))
+        add("Ctrl+PgDown", lambda: self._roi_controller.navigate_file(1))
+        add("Ctrl+PgUp", lambda: self._roi_controller.navigate_file(-1))
+        add("Ctrl+Down", lambda: self._roi_controller.navigate_file(1))
+        add("Ctrl+Up", lambda: self._roi_controller.navigate_file(-1))
+        add("F", self._roi_controller.fit_view)
+        add("Home", self._roi_controller.fit_slide)
+
+    def _show_shortcut_help(self) -> None:
+        QMessageBox.information(
+            self, "快捷键",
+            "Space — 创建 ROI / 切换 ROI 模式\n"
+            "Delete — 删除选中 ROI（可多选）\n"
+            "Ctrl+Z / Ctrl+Y — 撤销 / 重做\n"
+            "Ctrl+C / Ctrl+D — 复制选中 ROI\n"
+            "Ctrl+A — 全选当前切片 ROI\n"
+            "N / Ctrl+Right — 下一个 ROI\n"
+            "P / Ctrl+Left — 上一个 ROI\n"
+            "Ctrl+PgDown / Ctrl+Down — 下一个文件\n"
+            "Ctrl+PgUp / Ctrl+Up — 上一个文件\n"
+            "F — 适配选中 ROI\n"
+            "Home — 适配整张切片\n"
+            "双击 ROI 列表 — 精确编辑坐标",
+        )
+
+    def _focus_targets_text_widget(self) -> bool:
+        from PySide6.QtWidgets import QAbstractSpinBox, QLineEdit, QComboBox, QPlainTextEdit, QTextEdit
+        w = self.focusWidget()
+        return isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox))
+
+    def _roi_undo(self) -> None:
+        self._roi_controller.undo()
+
+    def _roi_redo(self) -> None:
+        self._roi_controller.redo()
+
+    def _copy_selected_rois(self) -> None:
+        self._roi_controller.copy_selected_rois()
+
+    def _select_all_rois(self) -> None:
+        self._roi_controller.select_all_rois()
+
+    def _edit_selected_roi(self) -> None:
+        self._roi_controller.edit_roi()
+
+    def _on_roi_list_double_clicked(self, item) -> None:
+        rid = item.data(Qt.ItemDataRole.UserRole)
+        if rid:
+            self._roi_controller.edit_roi(rid)
+
+    def _show_export_queue(self) -> None:
+        self._file_controller.cleanup_stale_rois()
+        all_rois = self._roi_manager.all_rois()
+        if not all_rois:
+            QMessageBox.information(self, "提示", "请先标注 ROI")
+            return
+        try:
+            self._export_queue.clear_jobs()
+        except RuntimeError:
+            pass
+        self._crop_config.crop_width = self._frame_w_spin.value()
+        self._crop_config.crop_height = self._frame_h_spin.value()
+        self._crop_config.mag_label = self._mag_cb.currentText().rstrip("xX")
+        self._export_queue.enqueue_from_manager(
+            self._roi_manager,
+            self._crop_config,
+            path_to_reader=self._readers,
+        )
+        if self._export_queue_dialog is None:
+            self._export_queue_dialog = ExportQueueDialog(self._export_queue, self)
+        self._export_queue_dialog.refresh()
+        self._export_queue_dialog.show()
+        self._export_queue_dialog.raise_()
+        self._export_queue_dialog.activateWindow()
 
     def _apply_theme(self, name: str) -> None:
         qss = load_theme(name)
@@ -956,17 +1099,35 @@ class MainWindow(QMainWindow):
     def _on_roi_rect_changed(self, roi_id: str, new_rect, angle: float = 0.0) -> None:
         self._roi_controller.on_roi_rect_changed(roi_id, new_rect, angle)
 
+    def _on_roi_edit_finished(self, roi_id: str, old_rect, old_angle: float) -> None:
+        self._roi_controller.on_roi_edit_finished(roi_id, old_rect, float(old_angle))
+
     def _on_roi_selection_changed(self, roi_id: str) -> None:
         self._roi_controller.on_roi_selection_changed(roi_id)
 
+    def _on_roi_selection_multi(self, ids: list) -> None:
+        self._roi_controller.on_canvas_selection_multi(ids)
+
+    def _on_roi_batch_delete(self, ids: list) -> None:
+        self._roi_controller.on_canvas_roi_batch_delete(ids)
+
     def _on_roi_list_selected(self, row: int) -> None:
         self._roi_controller.on_roi_list_selected(row)
+
+    def _on_roi_list_selection_changed(self) -> None:
+        self._roi_controller.on_roi_list_selection_changed()
 
     def _on_roi_added(self, roi: ROIModel) -> None:
         self._roi_controller.on_roi_added(roi)
 
     def _on_roi_removed(self, roi_id: str) -> None:
         self._roi_controller.on_roi_removed(roi_id)
+
+    def _on_roi_updated(self, roi: ROIModel) -> None:
+        self._roi_controller.on_roi_updated(roi)
+
+    def _on_roi_cleared(self, slide_path) -> None:
+        self._roi_controller.on_roi_cleared(slide_path)
 
     def _restore_roi_on_canvas(self) -> None:
         self._roi_controller.restore_roi_on_canvas()

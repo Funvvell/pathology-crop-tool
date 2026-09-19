@@ -153,16 +153,31 @@ pyinstaller build.spec
 ### 基本操作
 
 ```
-打开 SDPC 文件 → 滚轮缩放浏览 → 空格键创建 ROI → 批量导出 TIFF
+打开 SDPC 文件 → 滚轮缩放浏览 → 空格键创建 ROI → 批量/队列导出 TIFF
 ```
 
 | 快捷键 | 功能 |
 |:------:|------|
 | `Space` | 创建 ROI / 切换 ROI 模式 |
-| `Delete` | 删除选中的 ROI |
+| `Delete` | 删除选中的 ROI（可多选） |
+| `Ctrl+Z` / `Ctrl+Y` | ROI 撤销 / 重做 |
+| `Ctrl+C` / `Ctrl+D` | 复制选中 ROI |
+| `Ctrl+A` | 全选当前切片 ROI |
+| `N` / `Ctrl+→` | 下一个 ROI（居中显示） |
+| `P` / `Ctrl+←` | 上一个 ROI |
+| `Ctrl+PgDn` / `Ctrl+↓` | 下一个切片文件 |
+| `Ctrl+PgUp` / `Ctrl+↑` | 上一个切片文件 |
+| `F` | 适配选中 ROI 视野 |
+| `Home` | 适配整张切片 |
 | 滚轮 | 缩放 WSI 视图 |
 | 左键拖拽 | 平移浏览 / 拖拽 ROI |
+| `Ctrl+点击` | 多选 ROI |
 | 右键拖拽 | 旋转视图角度 |
+| 双击 ROI 列表项 | 精确编辑 x/y/w/h/角度 |
+
+### 导出队列
+
+工具栏「导出队列」可将各切片的 ROI 按文件排队导出：逐任务进度、取消、失败重试、结束汇总。原有「批量导出」一键全量路径保持不变。
 
 ---
 
@@ -181,7 +196,11 @@ pathology-crop-tool/
 │   ├── canvas.py                      # WSICanvas — 金字塔渲染 + ROI
 │   ├── reader.py                      # SDPCReader — ctypes DLL 封装
 │   ├── roi.py                         # ROIModel + ROIManager
+│   ├── roi_undo.py                    # ROI 撤销/重做命令栈
+│   ├── roi_edit_dialog.py             # ROI 坐标精确编辑
 │   ├── exporter.py                    # BatchExporter — 批量 TIFF 导出
+│   ├── export_queue.py                # 按文件导出队列（进度/重试）
+│   ├── export_queue_dialog.py         # 导出队列 UI
 │   ├── tissue_detect.py               # HistoKit Otsu 组织检测
 │   ├── ihc_hotspot.py                 # IHC 热点检测算法 + UI
 │   ├── deepliif_runner.py             # DeepLIIF 推理引擎
@@ -203,8 +222,10 @@ pathology-crop-tool/
 │
 └── tests/
     ├── test_roi.py                    # ROI 数据模型测试
+    ├── test_roi_undo.py               # 撤销/重做栈测试
     ├── test_utils.py                  # 坐标映射测试
     ├── test_exporter.py               # 导出功能测试
+    ├── test_export_queue.py           # 导出队列状态机测试
     └── test_ihc_hotspot.py            # IHC 算法完整测试
 ```
 
@@ -356,6 +377,26 @@ IHC 测试覆盖：色彩反卷积正确性 · 阈值判定 · 密度图计算 �
 ---
 
 ## 📋 更新日志
+
+### Unreleased — 导出队列 + 标注体验
+
+**导出队列**
+
+- 新增 GUI 内导出队列：按切片文件排队、逐项进度、取消、失败重试、结果汇总
+- 原「批量导出」一键全量路径保留
+
+**ROI 标注体验**
+
+- 撤销/重做（Ctrl+Z / Ctrl+Y），批量删除/复制/清空作为单步
+- ROI 列表多选与画布 Ctrl+点击双向同步；批量删除/复制
+- 快捷键扩展：N/P 导航 ROI、切换文件、F/Home 适配视野、Ctrl+A/C/D
+- 双击列表精确编辑坐标；选中 ROI 信息面板（坐标/尺寸/µm）
+
+**代码质量**
+
+- 导航缩略图 QImage `.copy()`，避免悬垂引用
+- 预设读写失败写入诊断日志
+- 主题资源 `package-data` 随包分发；AI 依赖拆分为可选 extra
 
 ### v0.8.1 — Code Review 修复版
 

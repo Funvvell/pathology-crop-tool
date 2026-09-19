@@ -35,6 +35,13 @@ class TestROIModel:
         )
         assert isinstance(roi.slide_path, Path)
 
+    def test_snapshot_is_independent(self):
+        roi = ROIModel(slide_path=Path("a.sdpc"), x=1, y=2, w=3, h=4, id="snap")
+        snap = roi.snapshot()
+        roi.x = 99
+        assert snap.x == 1
+        assert snap.id == "snap"
+
 
 class TestROIManager:
     def setup_method(self):
@@ -114,3 +121,35 @@ class TestROIManager:
         assert r.y == 20
         assert r.w == 100
         assert r.h == 200
+
+    def test_get_roi(self):
+        roi = self._make_roi()
+        self.manager.add_roi(roi)
+        assert self.manager.get_roi(roi.id) is roi
+        assert self.manager.get_roi("missing") is None
+
+    def test_sorted_slide_rois(self):
+        slide = Path("s.sdpc")
+        self.manager.add_roi(ROIModel(slide_path=slide, x=50, y=0, w=1, h=1, id="b"))
+        self.manager.add_roi(ROIModel(slide_path=slide, x=10, y=5, w=1, h=1, id="a"))
+        self.manager.add_roi(ROIModel(slide_path=slide, x=10, y=1, w=1, h=1, id="c"))
+        ids = [r.id for r in self.manager.sorted_slide_rois(slide)]
+        assert ids == ["c", "a", "b"]
+
+    def test_update_roi_geometry_emits_updated(self):
+        m = ROIManager()
+        seen = []
+        m.roi_updated.connect(lambda r: seen.append(r.id))
+        m.add_roi(ROIModel(slide_path=Path("a.sdpc"), x=0, y=0, w=1, h=1, id="u"))
+        m.update_roi_geometry("u", 5, 6, 7, 8, 12.5)
+        roi = m.get_roi("u")
+        assert (roi.x, roi.y, roi.w, roi.h, roi.angle) == (5, 6, 7, 8, 12.5)
+        assert seen == ["u"]
+
+    def test_replace_roi(self):
+        m = ROIManager()
+        m.add_roi(ROIModel(slide_path=Path("a.sdpc"), x=0, y=0, w=1, h=1, id="p"))
+        new = ROIModel(slide_path=Path("a.sdpc"), x=9, y=9, w=2, h=2, id="p", angle=30)
+        m.replace_roi(new)
+        assert m.get_roi("p").x == 9
+        assert m.get_roi("p").angle == 30
