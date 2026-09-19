@@ -884,10 +884,12 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
+        # 焦点守卫主要靠 QApplication.focusChanged（见 __init__）；
+        # 这里只处理安装了过滤器的控件上的焦点与鼠标事件。
         if event.type() in (
             QEvent.Type.FocusIn,
             QEvent.Type.FocusOut,
-            QEvent.Type.ApplicationFocusChange,
+            QEvent.Type.FocusAboutToChange,
         ):
             if hasattr(self, "_shortcuts") and self._shortcuts:
                 self._update_shortcut_enabled()
