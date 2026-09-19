@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from liver_portal_crop.reader import SDPCReader
 from liver_portal_crop.roi import ROIModel
+from liver_portal_crop.theme import apply_object_name, token
 
 
 # ── 自定义勾选指示器 ──────────────────────────────────
@@ -53,11 +54,11 @@ class CheckIndicator(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect().adjusted(1, 1, -1, -1)
         if self._checked:
-            p.setBrush(QBrush(QColor("#007AFF")))
+            p.setBrush(QBrush(QColor(token("check_on"))))
             p.setPen(Qt.PenStyle.NoPen)
         else:
-            p.setBrush(QBrush(QColor("#3a3a3c")))
-            p.setPen(QPen(QColor("#636366"), 1.5))
+            p.setBrush(QBrush(QColor(token("check_off_bg"))))
+            p.setPen(QPen(QColor(token("check_off_pen")), 1.5))
         p.drawEllipse(rect)
         p.end()
 
@@ -114,7 +115,7 @@ class ROICardWidget(QWidget):
         # 尺寸标签
         size_label = QLabel(f"{roi_w}x{roi_h}")
         size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        size_label.setStyleSheet("font-size: 10px; color: #86868b;")
+        size_label.setObjectName("hintText")
         layout.addWidget(size_label)
 
     def set_thumbnail(self, pixmap: QPixmap) -> None:
@@ -141,7 +142,7 @@ class ROICardWidget(QWidget):
 
     def set_loading_error(self) -> None:
         self._thumb_label.setText("加载失败")
-        self._thumb_label.setStyleSheet("color: #FF3B30; font-size: 11px;")
+        apply_object_name(self._thumb_label, "errorText")
 
     def is_checked(self) -> bool:
         return self._indicator.is_checked()
@@ -366,59 +367,7 @@ class FullResPreviewDialog(QDialog):
         self._navigate_to(current_index)
 
     def _setup_ui(self) -> None:
-        self.setStyleSheet("""
-            FullResPreviewDialog {
-                background: #1c1c1e;
-                border: 1px solid #38383a;
-                border-radius: 12px;
-            }
-            #previewTitleBar {
-                background: #2c2c2e;
-                border-top-left-radius: 12px;
-                border-top-right-radius: 12px;
-                border-bottom: 1px solid rgba(84, 84, 88, 0.35);
-            }
-            #previewTitleLabel {
-                color: #f5f5f7;
-                font-size: 13px;
-                font-weight: 600;
-                background: transparent;
-            }
-            #previewCloseBtn {
-                background: rgba(118, 118, 128, 0.24);
-                border: 1px solid rgba(84, 84, 88, 0.35);
-                color: #f5f5f7;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 8px;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
-                padding: 0;
-            }
-            #previewCloseBtn:hover {
-                background: #FF3B30;
-                border-color: #FF3B30;
-                color: #fff;
-            }
-            #previewInfoLabel {
-                color: #86868b;
-                font-size: 11px;
-                background: transparent;
-                padding: 2px 12px;
-            }
-            #previewStatus {
-                color: #636366;
-                font-size: 11px;
-                background: #2c2c2e;
-                padding: 2px 12px;
-                border-top: 1px solid rgba(84, 84, 88, 0.35);
-                border-bottom-left-radius: 12px;
-                border-bottom-right-radius: 12px;
-            }
-        """)
-
+        # 标题栏 / 状态条样式由全局主题提供，避免硬编码覆盖
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -439,7 +388,9 @@ class FullResPreviewDialog(QDialog):
         self._view.setScene(self._scene)
         self._view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self._view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self._view.setStyleSheet("QGraphicsView { background: #1c1c1e; border: none; }")
+        self._view.setStyleSheet(
+            f"QGraphicsView {{ background: {token('viewer_bg')}; border: none; }}"
+        )
         layout.addWidget(self._view, 1)
 
         # 左侧切换按钮（overlay，手绘三角形确保居中）
@@ -705,9 +656,10 @@ class ROIPreviewDialog(QDialog):
             self._headers: dict[str, QLabel] = {}
             for file_name, _ in self._file_groups:
                 header = QLabel(f"  {file_name}")
+                header.setObjectName("accentText")
                 header.setStyleSheet(
-                    "font-weight: 600; font-size: 12px; color: #007AFF; "
-                    "padding: 4px 0; background: transparent;"
+                    "font-weight: 600; font-size: 12px; padding: 4px 0; "
+                    "background: transparent;"
                 )
                 self._headers[file_name] = header
 
@@ -995,9 +947,10 @@ class ROIPreviewPanel(QWidget):
         for file_name, _ in self._file_groups:
             if file_name not in self._headers:
                 header = QLabel(f"  {file_name}")
+                header.setObjectName("accentText")
                 header.setStyleSheet(
-                    "font-weight: 600; font-size: 12px; color: #007AFF; "
-                    "padding: 4px 0; background: transparent;"
+                    "font-weight: 600; font-size: 12px; padding: 4px 0; "
+                    "background: transparent;"
                 )
                 self._headers[file_name] = header
 
@@ -1154,8 +1107,8 @@ class ROIPreviewPanel(QWidget):
         card = self._cards.get(roi_id)
         if card and not card.isHidden():
             card.setStyleSheet(
-                "background: rgba(8, 145, 178, 0.15); "
-                "border: 1px solid #007AFF; border-radius: 8px;"
+                f"background: {token('card_selected_bg')}; "
+                f"border: 1px solid {token('card_selected_border')}; border-radius: 8px;"
             )
             scroll = self.findChild(QScrollArea)
             if scroll:

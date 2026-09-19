@@ -1269,8 +1269,9 @@ class _IHCPreviewView(QGraphicsView):
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorUnderMouse,
         )
+        from liver_portal_crop.theme import token
         self.setStyleSheet(
-            "QGraphicsView { background: #1c1c1e; border: none; }"
+            f"QGraphicsView {{ background: {token('viewer_bg')}; border: none; }}"
         )
         self._base_item: QGraphicsPixmapItem | None = None
         self._overlay_item: QGraphicsPixmapItem | None = None
@@ -1675,12 +1676,12 @@ class IHCHotspotDialog(QDialog):
 
         self._info_lbl = QLabel("点击下方「开始扫描」执行检测")
         self._info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._info_lbl.setStyleSheet("color: #86868b; font-size: 11px;")
+        self._info_lbl.setObjectName("hintText")
         left_layout.addWidget(self._info_lbl)
 
         self._stage_lbl = QLabel()
         self._stage_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._stage_lbl.setStyleSheet("color: #4c9aff; font-size: 11px;")
+        self._stage_lbl.setObjectName("accentText")
         left_layout.addWidget(self._stage_lbl)
 
         self._scan_progress = QProgressBar()
@@ -1693,7 +1694,7 @@ class IHCHotspotDialog(QDialog):
             "滚轮缩放 · 中键平移 · 拖拽移动 ROI · 角点缩放 · Del/右键删除 · 按 0/F 重置"
         )
         hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint_lbl.setStyleSheet("color: #636366; font-size: 10px;")
+        hint_lbl.setObjectName("hintText")
         left_layout.addWidget(hint_lbl)
 
         splitter.addWidget(left_widget)
@@ -1726,7 +1727,7 @@ class IHCHotspotDialog(QDialog):
         form.addRow("金字塔层级:", self._level_cb)
 
         self._level_info_lbl = QLabel()
-        self._level_info_lbl.setStyleSheet("color: #86868b; font-size: 10px;")
+        self._level_info_lbl.setObjectName("hintText")
         self._level_info_lbl.setWordWrap(True)
         form.addRow("", self._level_info_lbl)
 
@@ -1746,7 +1747,7 @@ class IHCHotspotDialog(QDialog):
         form.addRow("比例:", self._ratio_cb)
 
         self._frame_lbl = QLabel()
-        self._frame_lbl.setStyleSheet("color: #aeaeb2; font-size: 11px;")
+        self._frame_lbl.setObjectName("hintText")
         form.addRow("框尺寸:", self._frame_lbl)
 
         # ─ 检测参数 ─
@@ -1879,9 +1880,7 @@ class IHCHotspotDialog(QDialog):
     @staticmethod
     def _section_label(text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet(
-            "font-weight: 600; color: #f5f5f7; font-size: 12px;"
-        )
+        lbl.setObjectName("sectionHeader")
         return lbl
 
     # ────────────────────────────────────────────────────────

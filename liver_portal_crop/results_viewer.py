@@ -218,8 +218,10 @@ class DeepLIIFResultsDialog(QDialog):
         title_bar.setFixedHeight(36)
         title_lay = QHBoxLayout(title_bar)
         title_lay.setContentsMargins(12, 0, 8, 0)
-        title_lbl = QLabel("🔬 DeepLIIF 分析结果")
-        title_lbl.setStyleSheet("color: #f5f5f7; font-weight: bold; font-size: 13px;")
+        title_lbl = QLabel("DeepLIIF 结果")
+        title_lbl.setObjectName("previewTitleLabel")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_lay.addStretch()
         title_lay.addWidget(title_lbl)
         title_lay.addStretch()
         close_btn = QPushButton("\u00d7")
@@ -278,19 +280,19 @@ class DeepLIIFResultsDialog(QDialog):
 
         # ROI 元数据
         self._info_lbl = QLabel()
-        self._info_lbl.setStyleSheet("color: #86868b; font-size: 12px;")
+        self._info_lbl.setObjectName("hintText")
         self._info_lbl.setWordWrap(True)
         right_layout.addWidget(self._info_lbl)
 
         # ── 阈值调整滑块 ──
         right_layout.addWidget(QLabel(""))
         thresh_title = QLabel("阈值调整")
-        thresh_title.setStyleSheet("color: #f5f5f7; font-weight: bold; font-size: 13px;")
+        thresh_title.setObjectName("previewTitleLabel")
         right_layout.addWidget(thresh_title)
 
         # Intensity Threshold (seg_thresh)
         self._seg_thresh_lbl = QLabel("Intensity Threshold: 120")
-        self._seg_thresh_lbl.setStyleSheet("color: #86868b; font-size: 11px;")
+        self._seg_thresh_lbl.setObjectName("hintText")
         right_layout.addWidget(self._seg_thresh_lbl)
 
         self._seg_thresh_slider = QSlider(Qt.Orientation.Horizontal)
@@ -301,7 +303,7 @@ class DeepLIIFResultsDialog(QDialog):
 
         # Size Gating (size_thresh)
         self._size_thresh_lbl = QLabel("Size Gating: 7")
-        self._size_thresh_lbl.setStyleSheet("color: #86868b; font-size: 11px;")
+        self._size_thresh_lbl.setObjectName("hintText")
         right_layout.addWidget(self._size_thresh_lbl)
 
         self._size_thresh_slider = QSlider(Qt.Orientation.Horizontal)
@@ -313,7 +315,7 @@ class DeepLIIFResultsDialog(QDialog):
         # ── 评分 ──
         right_layout.addWidget(QLabel(""))
         score_title = QLabel("IHC 评分")
-        score_title.setStyleSheet("color: #f5f5f7; font-weight: bold; font-size: 13px;")
+        score_title.setObjectName("previewTitleLabel")
         right_layout.addWidget(score_title)
 
         self._score_table = QTableWidget()
