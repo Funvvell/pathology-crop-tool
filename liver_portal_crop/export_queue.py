@@ -324,7 +324,8 @@ class ExportQueueController(QObject):
                 s.ok_rois += len(job.ok_outputs)
             elif job.status == JobStatus.FAILED:
                 s.failed_jobs += 1
-                s.failed_rois += max(len(job.fail_outputs), 0)
+                # 无 file_done 的失败任务：用 total 补齐，避免 failed_rois 漏计
+                s.failed_rois += len(job.fail_outputs) or max(job.total - len(job.ok_outputs), 0)
                 s.ok_rois += len(job.ok_outputs)
             elif job.status == JobStatus.CANCELLED:
                 s.cancelled_jobs += 1

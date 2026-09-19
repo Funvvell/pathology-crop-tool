@@ -464,6 +464,15 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._load_session()
         self._preset_controller.load_presets()
+        # 焦点变化时启停 ROI 快捷键，避免输入控件中被拦截
+        from PySide6.QtWidgets import QApplication
+        app_instance = QApplication.instance()
+        if app_instance is not None:
+            app_instance.focusChanged.connect(self._on_app_focus_changed)
+
+    def _on_app_focus_changed(self, _old, _new) -> None:
+        if hasattr(self, "_shortcuts") and self._shortcuts:
+            self._update_shortcut_enabled()
 
     def _setup_ui(self) -> None:
         central = QWidget()
@@ -873,6 +882,13 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
+        if event.type() in (
+            QEvent.Type.FocusIn,
+            QEvent.Type.FocusOut,
+            QEvent.Type.ApplicationFocusChange,
+        ):
+            if hasattr(self, "_shortcuts") and self._shortcuts:
+                self._update_shortcut_enabled()
         if obj is self._label_img and event.type() == QEvent.Type.MouseButtonPress:
             self._show_label_image()
             return True
@@ -944,16 +960,12 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self) -> None:
         def add(seq: str, slot, guarded: bool = True) -> None:
-            def _run() -> None:
-                if guarded and self._focus_targets_text_widget():
-                    return
-                slot()
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            sc.activated.connect(_run)
-            self._shortcuts.append(sc)
+            # 焦点在输入控件时禁用快捷键，避免 QShortcut 拦截按键
+            sc.activated.connect(slot)
+            self._shortcuts.append((sc, guarded))
 
-        # 字符/通用编辑快捷键：焦点在输入控件时不拦截
         add("Ctrl+Z", self._roi_undo, guarded=True)
         add("Ctrl+Y", self._roi_redo, guarded=True)
         add("Ctrl+Shift+Z", self._roi_redo, guarded=True)
@@ -963,7 +975,6 @@ class MainWindow(QMainWindow):
         add("N", lambda: self._roi_controller.navigate_roi(1), guarded=True)
         add("P", lambda: self._roi_controller.navigate_roi(-1), guarded=True)
         add("F", self._roi_controller.fit_view, guarded=True)
-        # 组合键含 Ctrl+方向/PgUp/PgDown，输入框通常不吞这些，仍做守卫以保持一致
         add("Ctrl+Right", lambda: self._roi_controller.navigate_roi(1), guarded=True)
         add("Ctrl+Left", lambda: self._roi_controller.navigate_roi(-1), guarded=True)
         add("Ctrl+PgDown", lambda: self._roi_controller.navigate_file(1), guarded=True)
@@ -971,6 +982,13 @@ class MainWindow(QMainWindow):
         add("Ctrl+Down", lambda: self._roi_controller.navigate_file(1), guarded=True)
         add("Ctrl+Up", lambda: self._roi_controller.navigate_file(-1), guarded=True)
         add("Home", self._roi_controller.fit_slide, guarded=True)
+        self._update_shortcut_enabled()
+
+    def _update_shortcut_enabled(self) -> None:
+        blocked = self._focus_targets_text_widget()
+        for item in self._shortcuts:
+            sc, guarded = item if isinstance(item, tuple) else (item, True)
+            sc.setEnabled(not (guarded and blocked))
 
     def _show_shortcut_help(self) -> None:
         QMessageBox.information(

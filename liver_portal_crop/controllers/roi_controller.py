@@ -129,16 +129,6 @@ class ROIController(BaseController):
         self.undo_stack.push(AddRoiCommand(roi.snapshot()))
         self._update_roi_info_panel()
 
-    def add_rois_bulk(self, rois: list[ROIModel]) -> None:
-        """批量写入 ROI（组织检测 / IHC 等），并作为一条 undo 记录。"""
-        if not rois:
-            return
-        snaps = tuple(r.snapshot() for r in rois)
-        self.undo_stack.push(BatchAddCommand(snaps))
-        for roi in rois:
-            self.roi_manager.add_roi(roi)
-        self._update_roi_info_panel()
-
     def on_canvas_roi_selected(self, roi_id: str) -> None:
         if roi_id == "__toggle_roi__":
             new_state = not self.app._roi_mode_btn.isChecked()
