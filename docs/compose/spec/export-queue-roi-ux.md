@@ -1,14 +1,28 @@
 ---
 feature: export-queue-roi-ux
-status: in-progress
+status: delivered
 updated: 2026-06-16
 branch: feat/export-queue-roi-ux
-commits: f905381..<head>
+commits: f905381..2f06230
 ---
 
 # Export Queue + ROI Annotation UX
 
 ## Report
+
+**What was built** — 在病理裁剪工具 v0.8.1 上交付三块能力：① main 未提交基线（QImage 安全、日志、可选 AI 依赖、package-data）纳入特性分支并保持可测；② GUI 内「导出队列」：按切片文件排队 ROI 导出，支持串行执行、逐项进度、协作取消（含当前 BatchExporter）、失败重试、结果汇总，原一键「批量导出」路径保留；③ ROI 标注体验：撤销/重做（含批量删除/复制/组织检测/IHC 生成为单步）、列表 ExtendedSelection 与画布多选双向同步、快捷键体系（N/P、切换文件、F/Home、Ctrl+A/C/D/Z/Y）、双击精确编辑与选中信息面板。
+
+**Verification** — worktree 内执行：
+- `python -m pytest tests/ -q` → **PASS**，50 passed（含 roi_undo / export_queue / roi manager 扩展）
+- `python -c "from liver_portal_crop.app import MainWindow; ..."` → **PASS**
+- 独立审查（general agent）两轮：首轮 partial（C1 焦点守卫 + 队列 M1–M4），修复提交 `2f06230` 后复审 **success**，无新增 critical。
+
+**Journey log**
+1. Grill 收敛范围：不从 CLI/检测流水线做队列，只做 GUI 导出队列，降低与现有 BatchExporter 的耦合风险。
+2. 首版快捷键用 `ApplicationShortcut` + slot 内 early-return：审查指出 helper 死代码且 Qt 仍会吞键；改为 `focusChanged` 时 `setEnabled(False)`，输入控件内真正不拦截。
+3. 队列空导出结果曾被标 SUCCESS 并 `ok_rois or total` 抬高汇总；改为无 `file_done` → FAILED，汇总只计真实列表。
+4. 组织检测/IHC 直接 `add_roi` 不进 undo 栈，与「统一打点」规格不符；改为变更后 push `BatchAddCommand`。
+5. 自动生成 ROI 的批量入口曾留下 push-before-mutate 的死代码 `add_rois_bulk`，复审指出后删除，避免后续误用。
 
 ## [S1] Problem
 
@@ -77,8 +91,9 @@ class ExportQueueJob:
 - 单 job 失败不中断后续 job。
 - 输出文件命名保持：`{slide.stem}_ROI_{local:04d}{_mag}.tiff`（局部索引为该文件内 ROI 顺序）。
 - 已打开的 `readers[path]` 优先复用；开始执行前可 `set_path_to_reader` 刷新映射。
-- 取消：当前 job 协作取消（无产出 → `cancelled`）；剩余 pending → `cancelled`。
+- 取消：`cancel()` 置标志并调用当前 `BatchExporter.cancel()`；取消事件生效时当前 job 记 `cancelled`（已产出 ROI 仍计入 `ok_rois`）；剩余 pending → `cancelled`。
 - 无任何 `file_done` 且未取消 → `failed`（`no outputs`），避免空成功抬高汇总。
+- FAILED 且无 `file_done` 时，`failed_rois` 按 `total - ok` 补齐。
 - 结束汇总：`ok_jobs / failed_jobs / cancelled_jobs / ok_rois / failed_rois / output_dir`。
 - 现有「批量导出」「预览导出」按钮继续可用；工具栏「导出队列」打开队列面板。
 
@@ -124,7 +139,7 @@ class ExportQueueJob:
 | `F` | 视野适配当前选中 ROI（无选中则适配全部 ROI 包围盒；再无则不动） |
 | `Home` | 适配整张切片场景 |
 
-快捷键在主窗口与画布均可触发（画布 `keyPressEvent` 未处理的交给主窗口，或主窗口用 `QShortcut` 注册避免抢文本框输入——**焦点在 spin/combo/lineedit 时不拦截字符快捷键**）。
+快捷键在主窗口用 `QShortcut` 注册；**焦点在 spin/combo/lineedit 等输入控件时禁用这些快捷键**（`_update_shortcut_enabled`），避免拦截按键，输入控件仍可正常使用原生编辑键。
 
 #### 精确编辑与信息面板
 
@@ -163,12 +178,12 @@ class ExportQueueJob:
 
 ## Tasks
 
-- [ ] T1: Baseline 收口与触点代码质量 — acceptance: worktree 内基线文件齐全可导入；`file_controller` 缩略图 `.copy()`；`preset_controller` 异常有日志；现有 pytest 不回归 (covers: S2.1)
-- [ ] T2: ROI undo/redo 核心 — acceptance: `roi_undo` 单测覆盖 add/remove/update/clear 撤销重做，栈上限与批量一条命令 (covers: S2.3)
-- [ ] T3: 导出队列模型与控制器 — acceptance: `export_queue` 单测：入队分组、串行完成、单 job 失败不阻断、cancel、`retry_failed` 仅重置 failed (covers: S2.2; depends: T1)
-- [ ] T4: ROI 多选同步与批量操作 — acceptance: 列表 ExtendedSelection 与画布多选互同步；批量删除/复制可用；批量删除对应一条 undo (covers: S2.3; depends: T2)
-- [ ] T5: 快捷键与 ROI 导航 — acceptance: N/P、Ctrl+PgUp/PgDown、F/Home、Ctrl+A/C/D/Z/Y 行为符合 S2.3 表；焦点在输入控件时字符快捷键不误触发 (covers: S2.3; depends: T4)
-- [ ] T6: 精确编辑与信息面板 — acceptance: 双击改 x/y/w/h/angle 写回 model+canvas 并可 undo；选中/多选信息展示正确 (covers: S2.3; depends: T4)
-- [ ] T7: 导出队列 UI — acceptance: 可入队多文件、显示状态/进度、取消、重试失败项、结束汇总；旧「批量导出」路径仍可用 (covers: S2.2; depends: T3)
-- [ ] T8: 集成接线到 MainWindow — acceptance: 菜单/工具栏入口可打开队列；ROI 变更信号与 undo/列表/画布/信息面板一致 (covers: S2.2; depends: T5; T6; T7)
-- [ ] T9: 全量验证与文档 — acceptance: 从 worktree 运行 pytest 全绿或标注 PRE-EXISTING；README 补充队列与快捷键说明 (covers: S2.1; depends: T8)
+- [x] T1: Baseline 收口与触点代码质量 — acceptance: worktree 内基线文件齐全可导入；`file_controller` 缩略图 `.copy()`；`preset_controller` 异常有日志；现有 pytest 不回归 (covers: S2.1)
+- [x] T2: ROI undo/redo 核心 — acceptance: `roi_undo` 单测覆盖 add/remove/update/clear 撤销重做，栈上限与批量一条命令 (covers: S2.3)
+- [x] T3: 导出队列模型与控制器 — acceptance: `export_queue` 单测：入队分组、串行完成、单 job 失败不阻断、cancel、`retry_failed` 仅重置 failed (covers: S2.2; depends: T1)
+- [x] T4: ROI 多选同步与批量操作 — acceptance: 列表 ExtendedSelection 与画布多选互同步；批量删除/复制可用；批量删除对应一条 undo (covers: S2.3; depends: T2)
+- [x] T5: 快捷键与 ROI 导航 — acceptance: N/P、Ctrl+PgUp/PgDown、F/Home、Ctrl+A/C/D/Z/Y 行为符合 S2.3 表；焦点在输入控件时快捷键禁用不拦截 (covers: S2.3; depends: T4)
+- [x] T6: 精确编辑与信息面板 — acceptance: 双击改 x/y/w/h/angle 写回 model+canvas 并可 undo；选中/多选信息展示正确 (covers: S2.3; depends: T4)
+- [x] T7: 导出队列 UI — acceptance: 可入队多文件、显示状态/进度、取消、重试失败项、结束汇总；旧「批量导出」路径仍可用 (covers: S2.2; depends: T3)
+- [x] T8: 集成接线到 MainWindow — acceptance: 菜单/工具栏入口可打开队列；ROI 变更信号与 undo/列表/画布/信息面板一致 (covers: S2.2; depends: T5; T6; T7)
+- [x] T9: 全量验证与文档 — acceptance: 从 worktree 运行 pytest 全绿或标注 PRE-EXISTING；README 补充队列与快捷键说明 (covers: S2.1; depends: T8)
