@@ -136,7 +136,7 @@ class _ROICard(QWidget):
         self._img_label = QLabel(self._container)
         self._img_label.setGeometry(0, 0, thumb_size, thumb_size)
         self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_label.setStyleSheet("background: #3a3a3c; border-radius: 6px;")
+        self._img_label.setObjectName("mutedSurface")
         self._check_lbl = QLabel("✓" if self._checked else "", self._container)
         self._check_lbl.setGeometry(4, 4, 18, 18)
         self._check_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -146,7 +146,7 @@ class _ROICard(QWidget):
         # 尺寸标签
         self._size_label = QLabel(f"{roi.w}×{roi.h}")
         self._size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._size_label.setStyleSheet("color: #86868b; font-size: 10px;")
+        self._size_label.setObjectName("hintText")
         vl.addWidget(self._size_label)
 
     @property
@@ -171,15 +171,16 @@ class _ROICard(QWidget):
         self._img_label.setPixmap(scaled)
 
     def _update_check_style(self):
+        from liver_portal_crop.theme import token
         if self._checked:
             self._check_lbl.setStyleSheet(
-                "background: #007AFF; color: white; border-radius: 5px;"
+                f"background: {token('check_on')}; color: white; border-radius: 5px;"
                 "font-size: 12px; font-weight: bold;"
             )
         else:
             self._check_lbl.setStyleSheet(
-                "background: #3a3a3c; color: #636366; border-radius: 5px;"
-                "font-size: 12px;"
+                f"background: {token('check_off_bg')}; color: {token('check_off_fg')};"
+                "border-radius: 5px; font-size: 12px;"
             )
 
     def mousePressEvent(self, event):
@@ -262,7 +263,7 @@ class DeepLIIFAnalysisDialog(QDialog):
         # 模型状态 + 下载按钮
         self._model_status_lbl = QLabel()
         self._model_status_lbl.setWordWrap(True)
-        self._model_status_lbl.setStyleSheet("color: #86868b; font-size: 11px;")
+        self._model_status_lbl.setObjectName("hintText")
         self._model_status_lbl.setVisible(False)
         form.addRow("", self._model_status_lbl)
 
@@ -283,7 +284,7 @@ class DeepLIIFAnalysisDialog(QDialog):
         # 处理模式说明
         self._mode_info = QLabel()
         self._mode_info.setWordWrap(True)
-        self._mode_info.setStyleSheet("color: #636366; font-size: 11px;")
+        self._mode_info.setObjectName("hintText")
         form.addRow("", self._mode_info)
 
         # 分析范围
@@ -319,7 +320,7 @@ class DeepLIIFAnalysisDialog(QDialog):
         btn_deselect = QPushButton("取消全选")
         btn_deselect.clicked.connect(self._deselect_all)
         self._count_label = QLabel(f"已选: {len(self._rois)}/{len(self._rois)}")
-        self._count_label.setStyleSheet("color: #86868b;")
+        self._count_label.setObjectName("hintText")
         toolbar.addWidget(btn_select_all)
         toolbar.addWidget(btn_invert)
         toolbar.addWidget(btn_deselect)
@@ -409,13 +410,14 @@ class DeepLIIFAnalysisDialog(QDialog):
             self._download_btn.setVisible(False)
             return
         ok, msg = check_model_available(model_dir)
+        from liver_portal_crop.theme import apply_object_name
         if ok:
             self._model_status_lbl.setText(f"✓ {msg}")
-            self._model_status_lbl.setStyleSheet("color: #30D158; font-size: 11px;")
+            apply_object_name(self._model_status_lbl, "successText")
             self._download_btn.setVisible(False)
         else:
             self._model_status_lbl.setText(msg)
-            self._model_status_lbl.setStyleSheet("color: #FF9F0A; font-size: 11px;")
+            apply_object_name(self._model_status_lbl, "warningText")
             self._download_btn.setVisible(True)
 
     def _download_model(self):
@@ -480,15 +482,16 @@ class DeepLIIFAnalysisDialog(QDialog):
         self._dl_progress.close()
         self._download_btn.setEnabled(True)
         self._download_btn.setText("下载模型 (~500MB)")
+        from liver_portal_crop.theme import apply_object_name
         if ok:
             self._model_status_lbl.setText(f"✓ {msg}")
-            self._model_status_lbl.setStyleSheet("color: #30D158; font-size: 11px;")
+            apply_object_name(self._model_status_lbl, "successText")
             self._download_btn.setVisible(False)
         else:
             self._model_status_lbl.setText(msg)
-            color = "#86868b" if "取消" in msg else "#FF3B30"
-            self._model_status_lbl.setStyleSheet(
-                f"color: {color}; font-size: 11px;"
+            apply_object_name(
+                self._model_status_lbl,
+                "hintText" if "取消" in msg else "errorText",
             )
         self._check_model_status()
 

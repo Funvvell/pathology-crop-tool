@@ -103,9 +103,10 @@ SDPC 全切片病理图像浏览 · ROI 标注 · IHC 热点检测 · AI 分析 
 
 ### 🎨 专业 UI
 
-- macOS Big Sur 风格深色 / 浅色主题一键切换（v2 升级版）
-- 统一 6 级圆角体系（4px → 14px）+ alpha 增量 hover/pressed 状态过渡
-- Apple Blue `#007AFF` 强调色，列表 hover 色条指示，focus ring 一致性
+- 「临床仪器面板」v3 主题：深色 / 浅色一键切换
+- 五级表面层级（window → panel → raised → surface → line）+ 完整 hover / pressed / focus / disabled 状态
+- 系统蓝 `#0A84FF` 为主强调；H&E 玫瑰 `#FF4D6D` 用于区块刻度与 ROI 列表选中
+- 表格 / 表头 / 进度胶囊 / 危险软填充按钮统一 token，对比度满足正文 4.5:1
 - 参考 [PyQt-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) / [napari](https://github.com/napari/napari) / [qt-material](https://github.com/dunderlab/qt-material) 开源项目优化
 - PyInstaller 单文件打包（~200 MB）
 - 自定义 SVG 图标，多分辨率渲染

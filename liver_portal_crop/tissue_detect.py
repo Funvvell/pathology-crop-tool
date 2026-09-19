@@ -286,7 +286,7 @@ class TissueDialog(QDialog):
 
         # 框尺寸（只读）
         self._frame_lbl = QLabel()
-        self._frame_lbl.setStyleSheet("color: #aeaeb2; font-size: 12px;")
+        self._frame_lbl.setObjectName("hintText")
         form.addRow("框尺寸:", self._frame_lbl)
 
         # 适用范围（多文件时显示）

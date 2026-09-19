@@ -752,6 +752,7 @@ class MainWindow(QMainWindow):
         file_list_header.setObjectName("sectionHeader")
         left_layout.addWidget(file_list_header)
         self._file_list = QListWidget()
+        self._file_list.setObjectName("fileList")
         self._file_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -830,6 +831,7 @@ class MainWindow(QMainWindow):
         self._roi_info_label.setWordWrap(True)
         right_layout.addWidget(self._roi_info_label)
         self._roi_list = QListWidget()
+        self._roi_list.setObjectName("roiList")
         self._roi_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._roi_list.itemDoubleClicked.connect(self._on_roi_list_double_clicked)
         right_layout.addWidget(self._roi_list)
@@ -1070,7 +1072,10 @@ class MainWindow(QMainWindow):
         self._export_queue_dialog.activateWindow()
 
     def _apply_theme(self, name: str) -> None:
+        from liver_portal_crop.theme import set_current_theme
+
         qss = load_theme(name)
+        set_current_theme(name)
         if qss:
             from PySide6.QtWidgets import QApplication
             QApplication.instance().setStyleSheet(qss)
