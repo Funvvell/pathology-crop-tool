@@ -66,20 +66,21 @@ class ExportQueueJob:
 
 | 操作 | 行为 |
 |------|------|
-| `enqueue_slides(paths, roi_manager)` | 按切片文件分组 ROI；无 ROI 的文件跳过并提示 |
-| `enqueue_all_rois()` | 当前 `cleanup_stale_rois` 后按文件入队全部 ROI |
-| `start()` | 串行执行：对每个 pending job 复用/打开 reader，调用现有 `BatchExporter` 逻辑导出该 job 的 ROI |
-| `cancel()` | 当前 job 协作取消；剩余 pending → `cancelled` |
-| `retry_failed()` | 仅将 `failed` 重置为 `pending` 并再次 `start()` |
+| `enqueue_from_manager(roi_manager, crop_config, path_to_reader=None, slide_paths=None)` | 按切片文件分组 ROI 入队；`slide_paths` 限定文件 |
+| `start()` | 串行执行 pending job；可注入 `set_export_fn` 便于测试 |
+| `cancel()` | 置取消标志，并尝试 `BatchExporter.cancel()` 中止当前 job |
+| `retry_failed()` | 仅将 `failed` 重置为 `pending` 并可再次 `start()` |
 | 信号 | `job_updated(job_id)`、`queue_finished(summary)`、`job_progress(job_id, done, total)` |
 
 **行为契约**：
 
 - 单 job 失败不中断后续 job。
 - 输出文件命名保持：`{slide.stem}_ROI_{local:04d}{_mag}.tiff`（局部索引为该文件内 ROI 顺序）。
-- 已打开的 `readers[path]` 优先复用；否则 job 内打开，结束后不强制关闭 GUI reader。
+- 已打开的 `readers[path]` 优先复用；开始执行前可 `set_path_to_reader` 刷新映射。
+- 取消：当前 job 协作取消（无产出 → `cancelled`）；剩余 pending → `cancelled`。
+- 无任何 `file_done` 且未取消 → `failed`（`no outputs`），避免空成功抬高汇总。
 - 结束汇总：`ok_jobs / failed_jobs / cancelled_jobs / ok_rois / failed_rois / output_dir`。
-- 现有「批量导出」「预览导出」按钮继续可用；「批量导出」可走队列（按文件拆 job）或保持一键全量——**交付时二者都支持**：一键全量复用旧路径；新按钮「导出队列」打开队列面板。
+- 现有「批量导出」「预览导出」按钮继续可用；工具栏「导出队列」打开队列面板。
 
 **队列 UI**（`ExportQueueDialog` 或侧栏）：
 
@@ -127,7 +128,7 @@ class ExportQueueJob:
 
 #### 精确编辑与信息面板
 
-- ROI 列表 `setSelectionMode(ExtendedSelection)`；**双击**弹出 `ROISpinDialog`：x/y/w/h/angle 可编辑，校验 `w,h>0`，应用后写 `ROIManager` + `canvas.update_roi_rect` + 列表文本刷新，压入 undo。
+- ROI 列表 `setSelectionMode(ExtendedSelection)`；**双击**弹出 `ROIEditDialog`：x/y/w/h/angle 可编辑，校验 `w,h≥MIN_ROI_SIZE`，应用后写 `ROIManager` + `canvas.update_roi_rect` + 列表文本刷新，压入 undo。
 - 信息面板（右侧 ROI 列表上方或状态栏扩展）：选中时显示  
   `id前8位 | x,y | w×h | 角度 |（若有 mpp）物理尺寸`。  
   多选时显示 `已选 n 个 ROI` 与包围盒摘要。

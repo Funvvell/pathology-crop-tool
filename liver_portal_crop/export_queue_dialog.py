@@ -166,6 +166,11 @@ class ExportQueueDialog(QDialog):
         if not any(j.status == JobStatus.PENDING for j in self._controller.jobs()):
             QMessageBox.information(self, "提示", "没有等待中的任务")
             return
+        # 运行前刷新 reader 映射，覆盖入队后新打开的文件
+        parent = self.parent()
+        readers = getattr(parent, "_readers", None)
+        if isinstance(readers, dict):
+            self._controller.set_path_to_reader(readers)
         self._start_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
         self._retry_btn.setEnabled(False)
@@ -195,9 +200,12 @@ class ExportQueueDialog(QDialog):
             jobs = self._controller.jobs()
             out = jobs[0].output_dir if jobs else None
         if out and out.exists():
-            import os
             import subprocess
-            subprocess.Popen(["explorer", str(out)])
+            import sys
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", str(out)])
+            else:
+                subprocess.Popen(["xdg-open", str(out)])
         else:
             QMessageBox.information(self, "提示", "输出目录尚不存在")
 

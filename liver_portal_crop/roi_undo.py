@@ -171,7 +171,9 @@ class RoiUndoStack:
             command.revert(self._manager)
         except Exception:
             logger.exception("undo 失败: %s", command)
-            self._redo.clear()
+            self._suspend = False
+            # 失败命令放回 undo 栈顶，避免静默丢失
+            self._undo.append(command)
             return False
         finally:
             self._suspend = False
@@ -187,6 +189,8 @@ class RoiUndoStack:
             command.apply(self._manager)
         except Exception:
             logger.exception("redo 失败: %s", command)
+            self._suspend = False
+            self._redo.append(command)
             return False
         finally:
             self._suspend = False

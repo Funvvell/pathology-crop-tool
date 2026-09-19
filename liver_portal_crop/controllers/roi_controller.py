@@ -129,6 +129,16 @@ class ROIController(BaseController):
         self.undo_stack.push(AddRoiCommand(roi.snapshot()))
         self._update_roi_info_panel()
 
+    def add_rois_bulk(self, rois: list[ROIModel]) -> None:
+        """批量写入 ROI（组织检测 / IHC 等），并作为一条 undo 记录。"""
+        if not rois:
+            return
+        snaps = tuple(r.snapshot() for r in rois)
+        self.undo_stack.push(BatchAddCommand(snaps))
+        for roi in rois:
+            self.roi_manager.add_roi(roi)
+        self._update_roi_info_panel()
+
     def on_canvas_roi_selected(self, roi_id: str) -> None:
         if roi_id == "__toggle_roi__":
             new_state = not self.app._roi_mode_btn.isChecked()
@@ -451,7 +461,6 @@ class ROIController(BaseController):
         if reply != QMessageBox.StandardButton.Yes:
             return
         rois = self.roi_manager.all_rois()
-        # 按文件拆成多条 clear，整体仍可多次 undo；为简化，这里用批量删除一条命令
         snaps = tuple(r.snapshot() for r in rois)
         self.undo_stack.push(BatchRemoveCommand(snaps))
         for r in rois:
