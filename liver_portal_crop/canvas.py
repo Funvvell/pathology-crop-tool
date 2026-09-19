@@ -65,6 +65,8 @@ class RotateHandle(QGraphicsEllipseItem):
         self._drag_start_angle = math.atan2(pos.y() - center.y(),
                                              pos.x() - center.x())
         self._drag_start_rotation = self._parent_roi.rotation()
+        if hasattr(self._parent_roi, "ensure_gesture_origin"):
+            self._parent_roi.ensure_gesture_origin()
         self._parent_roi.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
         event.accept()
 
@@ -128,6 +130,8 @@ class ResizeHandle(QGraphicsEllipseItem):
     def mousePressEvent(self, event):
         self._drag_start_rect = self._parent_roi.rect()
         self._drag_start_scene = event.scenePos()
+        if hasattr(self._parent_roi, "ensure_gesture_origin"):
+            self._parent_roi.ensure_gesture_origin()
         self._parent_roi.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
         event.accept()
 
@@ -188,6 +192,9 @@ class ROIRectItem(QGraphicsRectItem):
         self.setBrush(QBrush(QColor(10, 132, 255, 25)))
         self._hover_pen = QPen(QColor(255, 69, 58), 2.5)
         self._block_sync = False
+        # 手势编辑起点（场景坐标矩形 + 角度），用于 undo
+        self._gesture_rect: QRectF | None = None
+        self._gesture_angle: float = 0.0
         # 旋转：以矩形中心为原点
         r = rect
         self.setTransformOriginPoint(r.left() + r.width() / 2,
@@ -231,9 +238,25 @@ class ROIRectItem(QGraphicsRectItem):
                          self.mapRectToScene(self.rect()),
                          self.rotation())
 
+    def ensure_gesture_origin(self) -> None:
+        """在几何即将变化前记录起点，供 undo 使用。"""
+        if self._gesture_rect is None:
+            self._gesture_rect = self.mapRectToScene(self.rect())
+            self._gesture_angle = self.rotation()
+
+    def pop_gesture_origin(self) -> tuple[QRectF, float] | None:
+        origin = self._gesture_rect
+        angle = self._gesture_angle
+        self._gesture_rect = None
+        self._gesture_angle = 0.0
+        return None if origin is None else (origin, angle)
+
     @property
     def roi_id(self) -> str:
         return self._roi_id
+
+    def scene_rect(self) -> QRectF:
+        return self.mapRectToScene(self.rect())
 
     def set_rect_silent(self, rect: QRectF):
         """设置矩形但不触发回调（用于初始化/恢复）。"""
@@ -278,6 +301,7 @@ class ROIRectItem(QGraphicsRectItem):
                 if getattr(view, '_drag_guard_active', False) and \
                    self in getattr(view, '_drag_guard_items', set()):
                     return self.pos()
+            self.ensure_gesture_origin()
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged \
            and not self._block_sync:
             self._update_handle_positions()
@@ -297,7 +321,10 @@ class WSICanvas(QGraphicsView):
     roi_created = Signal(str, QRectF, float)   # roi_id, rect, angle
     roi_selected = Signal(str)
     roi_rect_changed = Signal(str, QRectF, float)  # roi_id, new_rect, angle
+    roi_edit_finished = Signal(str, QRectF, float)  # roi_id, old_rect, old_angle
     roi_selection_changed = Signal(str)
+    roi_selection_multi = Signal(list)  # list[str] 当前多选 ROI ids
+    roi_batch_delete = Signal(list)     # list[str] 请求批量删除
     viewport_changed = Signal(QRectF)
     frame_angle_changed = Signal(float)  # 浮选框角度被右键拖拽改变
 
@@ -400,8 +427,10 @@ class WSICanvas(QGraphicsView):
         thumb_level = r.level_count - 1
         tw, th = r.thumbnail_size
         region = r._read_level_region(thumb_level, 0, 0, tw, th)
-        img_bytes = region.tobytes()
-        img = QImage(img_bytes, tw, th, tw * 3, QImage.Format.Format_RGB888)
+        # 与 _render_visible_tiles 保持一致：直接用 numpy 缓冲区构造（省一次
+        # tobytes() 拷贝），再用 .copy() 脱离底层数组，避免 QImage 悬垂引用
+        img = QImage(region.data, tw, th, tw * 3,
+                     QImage.Format.Format_RGB888).copy()
         pix = QPixmap.fromImage(img)
 
         scale = r.levels[thumb_level].downsample
@@ -449,6 +478,11 @@ class WSICanvas(QGraphicsView):
             self._hide_frame()
 
     def add_roi_rect(self, roi_id: str, rect: QRectF, angle: float = 0.0) -> None:
+        existing = self._roi_items.get(roi_id)
+        if existing is not None:
+            existing.set_rect_silent(rect)
+            existing.setRotation(angle)
+            return
         item = ROIRectItem(roi_id, rect, angle=angle,
                            on_changed=self._on_roi_rect_changed)
         self._scene.addItem(item)
@@ -472,6 +506,73 @@ class WSICanvas(QGraphicsView):
         item = self._roi_items.get(roi_id)
         if item:
             item.setSelected(True)
+
+    def select_rois(self, roi_ids: list[str]) -> None:
+        """多选指定 ROI；空列表表示清除选择。"""
+        self._scene.blockSignals(True)
+        self._scene.clearSelection()
+        self._scene.blockSignals(False)
+        for rid in roi_ids:
+            item = self._roi_items.get(rid)
+            if item:
+                item.setSelected(True)
+        self._emit_multi_selection()
+
+    def selected_roi_ids(self) -> list[str]:
+        ids: list[str] = []
+        for item in self._scene.selectedItems():
+            if isinstance(item, ROIRectItem):
+                ids.append(item.roi_id)
+        return ids
+
+    def _emit_multi_selection(self) -> None:
+        ids = self.selected_roi_ids()
+        self.roi_selection_multi.emit(ids)
+        if len(ids) == 1:
+            self.roi_selection_changed.emit(ids[0])
+        elif len(ids) == 0:
+            self.roi_selection_changed.emit("")
+
+    def fit_to_rect(self, rect: QRectF | None, margin_ratio: float = 0.15) -> None:
+        """将视图适配到给定场景矩形。"""
+        if rect is None or rect.isEmpty():
+            return
+        margin_x = max(rect.width() * margin_ratio, 50.0)
+        margin_y = max(rect.height() * margin_ratio, 50.0)
+        target = rect.adjusted(-margin_x, -margin_y, margin_x, margin_y)
+        self.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
+        self._emit_viewport()
+        self._render_timer.start(50)
+
+    def fit_to_rois(self, roi_ids: list[str] | None = None) -> None:
+        """适配选中 ROI；ids 为 None 时适配当前选中，再否则全部 ROI。"""
+        if roi_ids is None:
+            roi_ids = self.selected_roi_ids()
+        items = [self._roi_items[i] for i in (roi_ids or []) if i in self._roi_items]
+        if not items:
+            items = list(self._roi_items.values())
+        if not items:
+            return
+        rect: QRectF | None = None
+        for item in items:
+            r = item.scene_rect() if hasattr(item, "scene_rect") else item.mapRectToScene(item.rect())
+            rect = r if rect is None else rect.united(r)
+        self.fit_to_rect(rect)
+
+    def fit_to_slide(self) -> None:
+        if self._reader is None:
+            return
+        self.fit_to_rect(QRectF(0, 0, self._reader.full_width, self._reader.full_height), 0.02)
+
+    def center_on_roi(self, roi_id: str) -> bool:
+        item = self._roi_items.get(roi_id)
+        if item is None:
+            return False
+        rect = item.scene_rect() if hasattr(item, "scene_rect") else item.mapRectToScene(item.rect())
+        self.centerOn(rect.center())
+        self._emit_viewport()
+        self._render_timer.start(50)
+        return True
 
     def remove_roi_rect(self, roi_id: str) -> None:
         item = self._roi_items.pop(roi_id, None)
@@ -748,6 +849,7 @@ class WSICanvas(QGraphicsView):
             self._drag_roi_mode = self.dragMode()
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             super().mousePressEvent(event)
+            self._emit_multi_selection()
             return
         super().mousePressEvent(event)
 
@@ -758,6 +860,19 @@ class WSICanvas(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        # 提交本手势中的几何变更（供 undo 使用）
+        for item in list(self._roi_items.values()):
+            if not isinstance(item, ROIRectItem):
+                continue
+            origin = item.pop_gesture_origin() if hasattr(item, "pop_gesture_origin") else None
+            if origin is None:
+                continue
+            old_rect, old_angle = origin
+            new_rect = item.scene_rect() if hasattr(item, "scene_rect") else item.mapRectToScene(item.rect())
+            new_angle = item.rotation()
+            if (not old_rect.isNull()
+                    and (old_rect != new_rect or abs(old_angle - new_angle) > 1e-6)):
+                self.roi_edit_finished.emit(item.roi_id, old_rect, float(old_angle))
         # 恢复其他 ROI 的 ItemIsSelectable
         if getattr(self, '_drag_others', None):
             for item in self._drag_others:
@@ -772,6 +887,7 @@ class WSICanvas(QGraphicsView):
         self._emit_viewport()
         self._render_timer.start(100)
         self._smooth_restore_timer.start()
+        self._emit_multi_selection()
 
     def wheelEvent(self, event):
         scale_factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -801,9 +917,9 @@ class WSICanvas(QGraphicsView):
                 self.roi_selected.emit("__toggle_roi__")
             return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and not event.isAutoRepeat():
-            # 删除所有选中的 ROI（快照列表避免迭代时修改）
-            for item in list(self._scene.selectedItems()):
-                if isinstance(item, ROIRectItem):
-                    self.roi_selected.emit(item.roi_id)
+            ids = self.selected_roi_ids()
+            if ids:
+                self.roi_batch_delete.emit(ids)
             return
+        # 字符类快捷键交给主窗口 QShortcut，避免与列表焦点冲突
         super().keyPressEvent(event)

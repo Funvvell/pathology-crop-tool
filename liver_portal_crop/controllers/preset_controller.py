@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,8 @@ from PySide6.QtWidgets import QInputDialog
 
 from liver_portal_crop.controllers.base import BaseController
 from liver_portal_crop.constants import SESSION_DIR_NAME
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from liver_portal_crop.app import MainWindow
@@ -25,6 +28,7 @@ class PresetController(BaseController):
             try:
                 self.app._presets = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
             except Exception:
+                logger.warning("预设文件读取失败，使用默认预设: %s", PRESETS_FILE, exc_info=True)
                 self.app._presets = {}
         if "默认" not in self.app._presets:
             self.app._presets["默认"] = {"mag": "20x", "ratio": "16:9", "w": 512, "h": 512, "angle": 0}
@@ -51,7 +55,7 @@ class PresetController(BaseController):
             PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
             PRESETS_FILE.write_text(json.dumps(self.app._presets, indent=2), encoding="utf-8")
         except Exception:
-            pass
+            logger.warning("预设文件写入失败: %s", PRESETS_FILE, exc_info=True)
         self.app._preset_cb.blockSignals(True)
         self.app._preset_cb.clear()
         self.app._preset_cb.addItems(list(self.app._presets.keys()))

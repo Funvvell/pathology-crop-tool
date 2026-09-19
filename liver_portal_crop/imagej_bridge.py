@@ -1006,16 +1006,16 @@ def launch_gui_tuning(
         logger.info("已设置标尺: %.4f %s/px", pixel_size, unit)
 
     # ── 等待用户操作 ──
-    print("\n" + "=" * 60)
-    print("  Fiji 已启动，图像已打开。")
-    print("  请在 Fiji 中进行所有调参操作：")
-    print("    • Image > Adjust > Threshold  →  调阈值")
-    print("    • Process > Filters / Binary   →  形态学处理")
-    print("    • Analyze > Measure            →  粒子分析")
-    print("    • Plugins > WEKA / StarDist    →  机器学习分割")
-    print("    • Plugins > Macros > Record    →  录制宏")
-    print("  操作完成后，等待弹出确认对话框。")
-    print("=" * 60 + "\n")
+    # 打包后的 exe 以 console=False 运行，print 不可见，统一走日志
+    logger.info("=" * 60)
+    logger.info("Fiji 已启动，图像已打开。请在 Fiji 中完成调参操作：")
+    logger.info("  Image > Adjust > Threshold  →  调阈值")
+    logger.info("  Process > Filters / Binary  →  形态学处理")
+    logger.info("  Analyze > Measure           →  粒子分析")
+    logger.info("  Plugins > WEKA / StarDist   →  机器学习分割")
+    logger.info("  Plugins > Macros > Record   →  录制宏")
+    logger.info("操作完成后，等待弹出确认对话框。")
+    logger.info("=" * 60)
 
     # 等待用户确认信号（由调用方设置，默认用 input 阻塞）
     _wait_for_user()

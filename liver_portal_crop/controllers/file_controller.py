@@ -70,8 +70,8 @@ class FileController(BaseController):
     def _update_nav_thumb(self, reader: SDPCReader) -> None:
         thumb = reader.thumbnail
         h, w, ch = thumb.shape
-        img_bytes = thumb.tobytes()
-        img = QImage(img_bytes, w, h, w * ch, QImage.Format.Format_RGB888)
+        # 与 canvas 缩略图路径一致：直接用 numpy 缓冲构造，.copy() 防悬垂
+        img = QImage(thumb.data, w, h, w * ch, QImage.Format.Format_RGB888).copy()
         pix = QPixmap.fromImage(img)
         self.app._nav.set_thumbnail(pix, reader.full_width, reader.full_height)
 
