@@ -36,6 +36,7 @@ from liver_portal_crop.tissue_detect import (
 from liver_portal_crop.ihc_hotspot import IHCHotspotDialog
 from liver_portal_crop.reader import SDPCReader, SDPCReadError
 from liver_portal_crop.roi import ROIManager, ROIModel
+from liver_portal_crop.roi_undo import BatchAddCommand
 from liver_portal_crop.preview_dialog import ROIPreviewDialog, ROIPreviewPanel
 from liver_portal_crop.analysis_dialog import DeepLIIFAnalysisDialog
 from liver_portal_crop.results_viewer import DeepLIIFResultsDialog
@@ -942,28 +943,34 @@ class MainWindow(QMainWindow):
         ))
 
     def _setup_shortcuts(self) -> None:
-        def add(seq: str, slot) -> None:
+        def add(seq: str, slot, guarded: bool = True) -> None:
+            def _run() -> None:
+                if guarded and self._focus_targets_text_widget():
+                    return
+                slot()
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            sc.activated.connect(slot)
+            sc.activated.connect(_run)
             self._shortcuts.append(sc)
 
-        add("Ctrl+Z", self._roi_undo)
-        add("Ctrl+Y", self._roi_redo)
-        add("Ctrl+Shift+Z", self._roi_redo)
-        add("Ctrl+C", self._copy_selected_rois)
-        add("Ctrl+D", self._copy_selected_rois)
-        add("Ctrl+A", self._select_all_rois)
-        add("N", lambda: self._roi_controller.navigate_roi(1))
-        add("P", lambda: self._roi_controller.navigate_roi(-1))
-        add("Ctrl+Right", lambda: self._roi_controller.navigate_roi(1))
-        add("Ctrl+Left", lambda: self._roi_controller.navigate_roi(-1))
-        add("Ctrl+PgDown", lambda: self._roi_controller.navigate_file(1))
-        add("Ctrl+PgUp", lambda: self._roi_controller.navigate_file(-1))
-        add("Ctrl+Down", lambda: self._roi_controller.navigate_file(1))
-        add("Ctrl+Up", lambda: self._roi_controller.navigate_file(-1))
-        add("F", self._roi_controller.fit_view)
-        add("Home", self._roi_controller.fit_slide)
+        # 字符/通用编辑快捷键：焦点在输入控件时不拦截
+        add("Ctrl+Z", self._roi_undo, guarded=True)
+        add("Ctrl+Y", self._roi_redo, guarded=True)
+        add("Ctrl+Shift+Z", self._roi_redo, guarded=True)
+        add("Ctrl+C", self._copy_selected_rois, guarded=True)
+        add("Ctrl+D", self._copy_selected_rois, guarded=True)
+        add("Ctrl+A", self._select_all_rois, guarded=True)
+        add("N", lambda: self._roi_controller.navigate_roi(1), guarded=True)
+        add("P", lambda: self._roi_controller.navigate_roi(-1), guarded=True)
+        add("F", self._roi_controller.fit_view, guarded=True)
+        # 组合键含 Ctrl+方向/PgUp/PgDown，输入框通常不吞这些，仍做守卫以保持一致
+        add("Ctrl+Right", lambda: self._roi_controller.navigate_roi(1), guarded=True)
+        add("Ctrl+Left", lambda: self._roi_controller.navigate_roi(-1), guarded=True)
+        add("Ctrl+PgDown", lambda: self._roi_controller.navigate_file(1), guarded=True)
+        add("Ctrl+PgUp", lambda: self._roi_controller.navigate_file(-1), guarded=True)
+        add("Ctrl+Down", lambda: self._roi_controller.navigate_file(1), guarded=True)
+        add("Ctrl+Up", lambda: self._roi_controller.navigate_file(-1), guarded=True)
+        add("Home", self._roi_controller.fit_slide, guarded=True)
 
     def _show_shortcut_help(self) -> None:
         QMessageBox.information(
@@ -1008,6 +1015,15 @@ class MainWindow(QMainWindow):
             self._roi_controller.edit_roi(rid)
 
     def _show_export_queue(self) -> None:
+        if self._export_queue.is_running:
+            if self._export_queue_dialog is None:
+                self._export_queue_dialog = ExportQueueDialog(self._export_queue, self)
+            self._export_queue_dialog.refresh()
+            self._export_queue_dialog.show()
+            self._export_queue_dialog.raise_()
+            self._export_queue_dialog.activateWindow()
+            self._status_label.setText("导出队列运行中，请先取消或等待完成")
+            return
         self._file_controller.cleanup_stale_rois()
         all_rois = self._roi_manager.all_rois()
         if not all_rois:
@@ -1015,18 +1031,21 @@ class MainWindow(QMainWindow):
             return
         try:
             self._export_queue.clear_jobs()
-        except RuntimeError:
-            pass
-        self._crop_config.crop_width = self._frame_w_spin.value()
-        self._crop_config.crop_height = self._frame_h_spin.value()
-        self._crop_config.mag_label = self._mag_cb.currentText().rstrip("xX")
-        self._export_queue.enqueue_from_manager(
-            self._roi_manager,
-            self._crop_config,
-            path_to_reader=self._readers,
-        )
+            self._crop_config.crop_width = self._frame_w_spin.value()
+            self._crop_config.crop_height = self._frame_h_spin.value()
+            self._crop_config.mag_label = self._mag_cb.currentText().rstrip("xX")
+            self._export_queue.enqueue_from_manager(
+                self._roi_manager,
+                self._crop_config,
+                path_to_reader=self._readers,
+            )
+        except RuntimeError as e:
+            QMessageBox.warning(self, "导出队列", str(e))
+            return
         if self._export_queue_dialog is None:
             self._export_queue_dialog = ExportQueueDialog(self._export_queue, self)
+        # 打开面板前刷新 reader 映射（入队后新打开的文件也能导出）
+        self._export_queue.set_path_to_reader(self._readers)
         self._export_queue_dialog.refresh()
         self._export_queue_dialog.show()
         self._export_queue_dialog.raise_()
@@ -1357,6 +1376,7 @@ class MainWindow(QMainWindow):
         import uuid
 
         total_all = 0
+        new_rois: list[ROIModel] = []
         for slide_path in slides:
             if slide_path not in self._readers:
                 continue
@@ -1386,8 +1406,14 @@ class MainWindow(QMainWindow):
                     x=x, y=y, w=w, h=h, id=uuid.uuid4().hex[:12],
                 )
                 self._roi_manager.add_roi(roi)
+                new_rois.append(roi)
 
             total_all += len(rois_list)
+
+        if new_rois:
+            self._roi_controller.undo_stack.push(
+                BatchAddCommand(tuple(r.snapshot() for r in new_rois))
+            )
 
         # 刷新当前画布显示
         self._canvas.clear_roi_rects()
@@ -1421,6 +1447,7 @@ class MainWindow(QMainWindow):
             full_h = getattr(cur_reader, 'full_height', 0) or 0 if cur_reader else 0
 
             created = 0
+            created_rois: list[ROIModel] = []
             for x, y, w, h in roi_list:
                 try:
                     x, y, w, h = int(x), int(y), int(w), int(h)
@@ -1437,11 +1464,17 @@ class MainWindow(QMainWindow):
                         id=uuid.uuid4().hex[:12],
                     )
                     self._roi_manager.add_roi(roi)
+                    created_rois.append(roi)
                     created += 1
                 except Exception as exc:
                     logger.warning(
                         "创建 IHC ROI 失败 (%d,%d,%d,%d): %s", x, y, w, h, exc,
                     )
+
+            if created_rois:
+                self._roi_controller.undo_stack.push(
+                    BatchAddCommand(tuple(r.snapshot() for r in created_rois))
+                )
 
             # 刷新画布
             try:

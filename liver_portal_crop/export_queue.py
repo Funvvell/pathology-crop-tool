@@ -15,7 +15,6 @@ from PySide6.QtCore import QObject, Signal
 
 from liver_portal_crop.exporter import BatchExporter, CropConfig
 from liver_portal_crop.roi import ROIManager, ROIModel
-from liver_portal_crop.utils import center_crop_rect
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +94,7 @@ class ExportQueueController(QObject):
         self._running = False
         self._export_fn: Callable[[ExportQueueJob, list[ROIModel], dict], None] | None = None
         self._last_summary: QueueSummary | None = None
+        self._active_exporter: BatchExporter | None = None
 
     # ── 入队 ────────────────────────────────────────────
 
@@ -179,6 +179,12 @@ class ExportQueueController(QObject):
 
     def cancel(self) -> None:
         self._cancel_event.set()
+        exporter = self._active_exporter
+        if exporter is not None:
+            try:
+                exporter.cancel()
+            except Exception:
+                logger.debug("取消当前导出任务时忽略异常", exc_info=True)
 
     def retry_failed(self) -> list[ExportQueueJob]:
         """仅将 failed 重置为 pending。返回被重置的 job 列表。"""
@@ -250,8 +256,16 @@ class ExportQueueController(QObject):
                 self._export_fn(job, rois, self._path_to_reader)
             else:
                 self._export_with_batch(job, rois, on_progress)
-            # 任务若已完整跑完，即使随后取消也记为 success；剩余 pending 在 start 循环里标 cancelled
-            if job.fail_outputs and not job.ok_outputs:
+            # 取消时：未产出任何文件 → cancelled；已产出部分成功但取消 → cancelled
+            if self._cancel_event.is_set() and not job.ok_outputs and not job.fail_outputs:
+                job.status = JobStatus.CANCELLED
+            elif self._cancel_event.is_set() and job.ok_outputs and not job.fail_outputs:
+                job.status = JobStatus.CANCELLED
+            elif not job.ok_outputs and not job.fail_outputs:
+                # 无任何 file_done 且未取消：视为失败，避免空成功抬高汇总
+                job.status = JobStatus.FAILED
+                job.error = job.error or "no outputs"
+            elif job.fail_outputs and not job.ok_outputs:
                 job.status = JobStatus.FAILED
                 job.error = job.error or "all outputs failed"
             elif job.fail_outputs:
@@ -275,6 +289,7 @@ class ExportQueueController(QObject):
             mag_label=job.mag_label,
         )
         exporter = BatchExporter(config)
+        self._active_exporter = exporter
         collected: list[tuple[str, str]] = []
         exporter.file_done.connect(lambda p, s: collected.append((p, s)))
         exporter.progress.connect(on_progress)
@@ -285,9 +300,12 @@ class ExportQueueController(QObject):
             if val is not None:
                 path_input[path] = val
 
-        if self._cancel_event.is_set():
-            exporter.cancel()
-        exporter.run(rois, path_input)
+        try:
+            if self._cancel_event.is_set():
+                exporter.cancel()
+            exporter.run(rois, path_input)
+        finally:
+            self._active_exporter = None
 
         for out_path, status in collected:
             if status == "ok":
@@ -303,13 +321,14 @@ class ExportQueueController(QObject):
         for job in self._jobs:
             if job.status == JobStatus.SUCCESS:
                 s.ok_jobs += 1
-                s.ok_rois += len(job.ok_outputs) or job.total
+                s.ok_rois += len(job.ok_outputs)
             elif job.status == JobStatus.FAILED:
                 s.failed_jobs += 1
-                s.failed_rois += len(job.fail_outputs) or max(job.total - job.done, 1)
+                s.failed_rois += max(len(job.fail_outputs), 0)
                 s.ok_rois += len(job.ok_outputs)
             elif job.status == JobStatus.CANCELLED:
                 s.cancelled_jobs += 1
+                s.ok_rois += len(job.ok_outputs)
             elif job.status == JobStatus.PENDING:
                 s.pending_jobs += 1
             if not s.output_dir and job.output_dir:
@@ -317,41 +336,9 @@ class ExportQueueController(QObject):
         return s
 
 
-def make_default_export_fn(
-    readers: dict[Path, Any],
-) -> Callable[[ExportQueueJob, list[ROIModel], dict], None]:
-    """工厂：使用调用时 readers 快照的默认导出（测试/脚本可选）。"""
-
-    def _fn(job: ExportQueueJob, rois: list[ROIModel], path_to_reader: dict) -> None:
-        merged = dict(path_to_reader)
-        merged.update(readers)
-        config = CropConfig(
-            output_dir=job.output_dir,
-            crop_width=job.crop_width,
-            crop_height=job.crop_height,
-            compression=job.compression,
-            mag_label=job.mag_label,
-        )
-        exporter = BatchExporter(config)
-        collected: list[tuple[str, str]] = []
-        exporter.file_done.connect(lambda p, s: collected.append((p, s)))
-        exporter.run(rois, merged)
-        for p, s in collected:
-            if s == "ok":
-                job.ok_outputs.append(p)
-            else:
-                job.fail_outputs.append(p)
-                job.error = s
-        job.done = len(collected)
-
-    return _fn
-
-
 __all__ = [
     "JobStatus",
     "ExportQueueJob",
     "ExportQueueController",
     "QueueSummary",
-    "make_default_export_fn",
-    "center_crop_rect",
 ]

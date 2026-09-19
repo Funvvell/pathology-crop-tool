@@ -147,11 +147,12 @@ def test_cancel_marks_remaining_pending(tmp_path):
     qc.set_export_fn(export_fn)
     summary = qc.start()
     statuses = [j.status for j in jobs]
-    assert statuses[0] == JobStatus.SUCCESS
+    # 完成产出后取消：本 job 记为 cancelled（协作取消语义），后续 pending → cancelled
+    assert statuses[0] == JobStatus.CANCELLED
     assert statuses[1] == JobStatus.CANCELLED
     assert statuses[2] == JobStatus.CANCELLED
-    assert summary.cancelled_jobs == 2
-    assert summary.ok_jobs == 1
+    assert summary.cancelled_jobs == 3
+    assert summary.ok_jobs == 0
 
 
 def test_empty_roi_job_fails(tmp_path):
@@ -166,14 +167,27 @@ def test_empty_roi_job_fails(tmp_path):
         output_dir=tmp_path,
         total=0,
     )
-    qc.jobs().append(job) if False else None
-    # 直接塞入内部列表
     qc._jobs.append(job)
     qc.set_export_fn(lambda j, r, m: None)
     summary = qc.start()
     assert job.status == JobStatus.FAILED
     assert job.error == "no rois"
     assert summary.failed_jobs == 1
+
+
+def test_no_outputs_not_marked_success(tmp_path):
+    manager = setup_manager_with_rois({"silent.sdpc": 2})
+    qc = ExportQueueController()
+    config = CropConfig(output_dir=tmp_path)
+    qc.enqueue_from_manager(manager, config)
+    qc.set_export_fn(lambda j, r, m: None)  # 不写任何输出
+    qc.start()
+    job = qc.jobs()[0]
+    assert job.status == JobStatus.FAILED
+    assert job.error in ("no outputs", "all outputs failed", "no outputs")
+    summary = qc.last_summary
+    assert summary.ok_jobs == 0
+    assert summary.ok_rois == 0
 
 
 def test_partial_failure_marks_job_failed(tmp_path):
