@@ -101,6 +101,13 @@ SDPC 全切片病理图像浏览 · ROI 标注 · IHC 热点检测 · AI 分析 
 - 复用已有 reader 对象，避免 DLL 死锁
 - ROI 预览对话框 — 缩略图网格 + 选择性导出
 
+### 🏷️ 标签图 OCR 重命名
+
+- 菜单「文件 → 按标签图 OCR 重命名...」批量读取内嵌标签图文字
+- 可配置正则提取病例号等字段 → 预览表勾选确认后改磁盘文件名
+- 基于开源 [RapidOCR](https://github.com/RapidAI/RapidOCR)（Apache-2.0，ONNX 离线）
+- 可选依赖：`pip install -e ".[ocr]"`（或 `pip install -r requirements-ocr.txt`）
+
 ### 🎨 专业 UI
 
 - 「临床仪器面板」v3 主题：深色 / 浅色一键切换
@@ -135,6 +142,9 @@ pip install -e .
 
 # [可选] 安装 AI 功能依赖（DeepLIIF 推理，~5GB）
 pip install -e ".[ai]"
+
+# [可选] 安装标签图 OCR 重命名依赖（RapidOCR + ONNX Runtime）
+pip install -e ".[ocr]"
 
 # 启动
 python main.py
@@ -202,6 +212,8 @@ pathology-crop-tool/
 │   ├── exporter.py                    # BatchExporter — 批量 TIFF 导出
 │   ├── export_queue.py                # 按文件导出队列（进度/重试）
 │   ├── export_queue_dialog.py         # 导出队列 UI
+│   ├── label_ocr_rename.py            # 标签 OCR → 重命名计划（纯逻辑）
+│   ├── label_ocr_rename_dialog.py     # OCR 重命名预览确认 UI
 │   ├── tissue_detect.py               # HistoKit Otsu 组织检测
 │   ├── ihc_hotspot.py                 # IHC 热点检测算法 + UI
 │   ├── deepliif_runner.py             # DeepLIIF 推理引擎
@@ -379,7 +391,13 @@ IHC 测试覆盖：色彩反卷积正确性 · 阈值判定 · 密度图计算 �
 
 ## 📋 更新日志
 
-### Unreleased — 导出队列 + 标注体验
+### Unreleased — 导出队列 + 标注体验 + 标签 OCR 重命名
+
+**标签 OCR 重命名**
+
+- 「文件 → 按标签图 OCR 重命名」：批量 OCR 标签图，正则提取后预览确认改名
+- 可选依赖 extra `[ocr]`；批内交换名两阶段落盘；与手工重命名共用状态同步语义
+- 打包限制：PyInstaller 单文件需自行验证 rapidocr 模型随包路径（源码/pip 运行为准）
 
 **导出队列**
 
