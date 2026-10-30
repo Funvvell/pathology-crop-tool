@@ -37,17 +37,55 @@ class FileController(BaseController):
                 QMessageBox.warning(self.app, "打开失败", str(e))
 
     def remove_selected_file(self) -> None:
-        row = self.app._file_list.currentRow()
-        if row < 0:
+        """移除全部选中项；当前切片被移除时回落到邻近项并重新加载。"""
+        file_list = self.app._file_list
+        selected = file_list.selectedItems()
+        if not selected:
+            row = file_list.currentRow()
+            if row < 0:
+                return
+            item = file_list.item(row)
+            if item is None:
+                return
+            selected = [item]
+
+        # 倒序取行号，避免 takeItem 后索引位移
+        rows = sorted({file_list.row(it) for it in selected}, reverse=True)
+        removed_current = False
+
+        # 批量移除期间屏蔽 currentRowChanged，避免逐个加载中间切片
+        was_blocked = file_list.blockSignals(True)
+        try:
+            for row in rows:
+                item = file_list.takeItem(row)
+                if item is None:
+                    continue
+                path_str = item.data(Qt.ItemDataRole.UserRole)
+                path = Path(path_str) if path_str else None
+                if not path:
+                    continue
+                if path in self.readers:
+                    self.roi_manager.clear_slide_rois(path)
+                    del self.readers[path]
+                if self.current_slide == path:
+                    self.app._current_slide = None
+                    removed_current = True
+
+            if removed_current:
+                remaining = file_list.count()
+                if remaining:
+                    file_list.setCurrentRow(min(min(rows), remaining - 1))
+        finally:
+            file_list.blockSignals(was_blocked)
+
+        if not removed_current:
             return
-        item = self.app._file_list.takeItem(row)
-        path_str = item.data(Qt.ItemDataRole.UserRole)
-        path = Path(path_str) if path_str else None
-        if path and path in self.readers:
-            self.roi_manager.clear_slide_rois(path)
-            del self.readers[path]
-            if self.current_slide == path:
-                self.app._current_slide = None
+
+        row = file_list.currentRow()
+        if row >= 0:
+            self.on_file_selected(row)
+        else:
+            self.app._status_label.setText("已移除全部文件")
 
     def on_file_selected(self, row: int) -> None:
         if row < 0:

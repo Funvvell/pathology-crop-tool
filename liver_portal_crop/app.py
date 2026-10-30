@@ -755,6 +755,10 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(file_list_header)
         self._file_list = QListWidget()
         self._file_list.setObjectName("fileList")
+        # 多选：批量移除、批量 OCR 重命名都以 selectedItems() 为准
+        self._file_list.setSelectionMode(
+            QListWidget.SelectionMode.ExtendedSelection
+        )
         self._file_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -1078,12 +1082,19 @@ class MainWindow(QMainWindow):
 
     def _ocr_rename_targets(self) -> list[Path]:
         """多选则选中文件，否则全部已打开文件（按列表顺序）。"""
-        selected = self._file_list.selectedItems()
-        items = selected if selected else [
-            self._file_list.item(i) for i in range(self._file_list.count())
-        ]
+        file_list = self._file_list
+        selected = file_list.selectedItems()
+        # selectedItems() 不保证列表顺序，按行号排序以稳定批量计划的冲突判定
+        rows = (
+            sorted(file_list.row(it) for it in selected)
+            if selected
+            else range(file_list.count())
+        )
         paths: list[Path] = []
-        for item in items:
+        for row in rows:
+            item = file_list.item(row)
+            if item is None:
+                continue
             path_str = item.data(Qt.ItemDataRole.UserRole)
             if not path_str:
                 continue
@@ -2807,52 +2818,59 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "重命名失败", str(e))
             return
 
-        # 更新 readers 字典
-        reader = self._readers.pop(old_path)
-        reader._path = new_path
-        self._readers[new_path] = reader
-
-        # 更新 ROI 管理器中的 slide_path
-        for roi in self._roi_manager.all_rois():
-            if roi.slide_path == old_path:
-                roi.slide_path = new_path
-
-        # 更新当前选中标记
-        if self._current_slide == old_path:
-            self._current_slide = new_path
-
-        # 更新列表项
-        item.setText(new_name)
-        item.setData(Qt.ItemDataRole.UserRole, str(new_path))
+        self._sync_rename_state(old_path, new_path)
         self._status_label.setText(f"已重命名: {new_name}")
 
-    def _sync_rename_state(self, old_path: Path, new_path: Path) -> None:
-        """重命名后同步 readers / ROI / 当前切片 / 文件列表。"""
-        if old_path in self._readers:
-            reader = self._readers.pop(old_path)
-            reader._path = new_path
-            self._readers[new_path] = reader
-        for roi in self._roi_manager.all_rois():
-            if roi.slide_path == old_path:
-                roi.slide_path = new_path
-        if self._current_slide == old_path:
-            self._current_slide = new_path
+    def _sync_rename_states(self, moves: list[tuple[Path, Path]]) -> None:
+        """批量同步重命名结果到 readers / ROI / 当前切片 / 文件列表。
+
+        先把涉及的 reader 与列表项全部取出、再按新键写回，避免批内交换名
+        （A→B、B→A）时后一项命中前一项刚改过的对象而互相覆盖。
+        """
+        popped = {
+            old: self._readers.pop(old)
+            for old, _new in moves
+            if old in self._readers
+        }
+        item_by_old: dict[Path, QListWidgetItem] = {}
         for i in range(self._file_list.count()):
             it = self._file_list.item(i)
-            if it and it.data(Qt.ItemDataRole.UserRole) == str(old_path):
-                it.setText(new_path.name)
-                it.setData(Qt.ItemDataRole.UserRole, str(new_path))
-                break
+            if it is None:
+                continue
+            key = it.data(Qt.ItemDataRole.UserRole)
+            if key:
+                item_by_old.setdefault(Path(key), it)
+
+        for old, new in moves:
+            reader = popped.get(old)
+            if reader is not None:
+                reader._path = new
+                self._readers[new] = reader
+            for roi in self._roi_manager.all_rois():
+                if roi.slide_path == old:
+                    roi.slide_path = new
+            if self._current_slide == old:
+                self._current_slide = new
+            it = item_by_old.get(old)
+            if it is not None:
+                it.setText(new.name)
+                it.setData(Qt.ItemDataRole.UserRole, str(new))
+
+    def _sync_rename_state(self, old_path: Path, new_path: Path) -> None:
+        """单项重命名后的状态同步。"""
+        self._sync_rename_states([(old_path, new_path)])
 
     def _apply_rename_batch(self, items: list[RenameItem]) -> RenameSummary:
         """执行计划并同步 GUI 状态。"""
-        ready = [it for it in items if it.status == "ready"]
-        mapping = {(it.path, it.path.with_name(it.new_name or it.path.name)): it for it in ready}
         summary = execute_rename_plan(items)
-        for (old, _new), it in mapping.items():
-            final = old.with_name(it.new_name) if it.new_name else None
-            if final and final.exists() and old.exists() is False:
-                self._sync_rename_state(old, final)
+        # execute_rename_plan 只在失败项上改写 status，故仍为 ready 的即已成功落盘
+        moves = [
+            (it.path, it.path.with_name(it.new_name))
+            for it in items
+            if it.status == "ready" and it.new_name
+        ]
+        if moves:
+            self._sync_rename_states(moves)
         return summary
 
     def _set_deepliif_model_dir(self) -> None:

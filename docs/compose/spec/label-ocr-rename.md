@@ -20,7 +20,12 @@ commits: d944a06..3faaf29
 
 **Known limitations**
 - PyInstaller 单文件未捆绑 rapidocr 模型目录，打包版 OCR 路径未验证；源码 / pip 运行为准（已写入 README 更新日志）
-- `_file_list` 仍为单选模式，`_ocr_rename_targets` 的「多选则仅处理选中」分支实际不可达，当前等价于「处理全部已打开文件」
+
+**Follow-up** — 交付后修复多选链路（见 `fix` 提交）：
+- `_file_list` 改为 `ExtendedSelection`，原「多选则仅处理选中」分支至此才可达；`selectedItems()` 顺序不定，`_ocr_rename_targets` 改为按行号排序，稳定批量冲突判定
+- `remove_selected_file` 支持批量移除：倒序 `takeItem`、屏蔽 `currentRowChanged` 避免逐个加载中间切片、当前切片被移除时回落邻近项并只重载一次
+- `_sync_rename_states` 改为两阶段（先摘出 reader 与列表项、再按新键写回），修复批内交换名 `A→B / B→A` 时后一项命中前一项刚改过的对象导致覆盖的问题；`_apply_rename_batch` 改用 status 判定成功项，`_rename_file` 复用同一 helper
+- 验证：offscreen 行为脚本 24 项断言全过（多选顺序、交换名同步、批量移除、回落重载、清空、单文件重命名回归）；`pytest tests/ -q` 仍 81 passed
 
 ## [S1] Problem
 
