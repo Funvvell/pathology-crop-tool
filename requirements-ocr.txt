@@ -1,0 +1,13 @@
+# 可选依赖 — 标签图 OCR 批量重命名（RapidOCR + ONNX Runtime）
+#
+#   pip install -r requirements-ocr.txt
+#
+# 或：pip install -e ".[ocr]"
+#
+# 核心功能（浏览 / 裁剪 / 组织检测 / IHC 热点）无需这些包。
+# 未安装时「按标签图 OCR 重命名」会提示安装指引。
+#
+# 本文件与 pyproject.toml 的 [project.optional-dependencies.ocr] 保持一致。
+
+rapidocr>=3.0,<4
+onnxruntime>=1.16

@@ -29,6 +29,8 @@ from liver_portal_crop.dialogs import SettingsDialog, ImageViewDialog, SliceInfo
 from liver_portal_crop.exporter import BatchExporter, CropConfig
 from liver_portal_crop.export_queue import ExportQueueController
 from liver_portal_crop.export_queue_dialog import ExportQueueDialog
+from liver_portal_crop.label_ocr_rename import RenameItem, RenameSummary, execute_rename_plan
+from liver_portal_crop.label_ocr_rename_dialog import LabelOcrRenameDialog
 from liver_portal_crop.navigator import NavigationWidget
 from liver_portal_crop.tissue_detect import (
     detect_tissue, tissue_regions_to_rois, tissue_regions_to_rois_grid, TissueDialog,
@@ -904,6 +906,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction("添加文件...", self._add_files)
         file_menu.addSeparator()
         file_menu.addAction("导出队列...", self._show_export_queue)
+        file_menu.addAction("按标签图 OCR 重命名...", self._show_label_ocr_rename)
         file_menu.addSeparator()
         file_menu.addAction("退出", self.close)
 
@@ -1072,6 +1075,44 @@ class MainWindow(QMainWindow):
         self._export_queue_dialog.show()
         self._export_queue_dialog.raise_()
         self._export_queue_dialog.activateWindow()
+
+    def _ocr_rename_targets(self) -> list[Path]:
+        """多选则选中文件，否则全部已打开文件（按列表顺序）。"""
+        selected = self._file_list.selectedItems()
+        items = selected if selected else [
+            self._file_list.item(i) for i in range(self._file_list.count())
+        ]
+        paths: list[Path] = []
+        for item in items:
+            path_str = item.data(Qt.ItemDataRole.UserRole)
+            if not path_str:
+                continue
+            p = Path(path_str)
+            if p in self._readers:
+                paths.append(p)
+        return paths
+
+    def _show_label_ocr_rename(self) -> None:
+        targets = self._ocr_rename_targets()
+        if not targets:
+            QMessageBox.information(self, "OCR 重命名", "请先添加 SDPC 文件")
+            return
+
+        def progress(i: int, n: int, path: Path) -> None:
+            if i < n:
+                self._status_label.setText(f"OCR {i + 1}/{n}: {path.name}")
+            else:
+                self._status_label.setText("OCR 识别完成")
+
+        dlg = LabelOcrRenameDialog(
+            self._readers, targets, parent=self, progress_cb=progress
+        )
+        dlg.exec()
+        summary = dlg.summary()
+        if summary is not None and summary.ok:
+            self._status_label.setText(
+                f"标签 OCR 重命名成功 {summary.ok} 个文件"
+            )
 
     def _apply_theme(self, name: str) -> None:
         from liver_portal_crop.theme import set_current_theme
@@ -2784,6 +2825,35 @@ class MainWindow(QMainWindow):
         item.setText(new_name)
         item.setData(Qt.ItemDataRole.UserRole, str(new_path))
         self._status_label.setText(f"已重命名: {new_name}")
+
+    def _sync_rename_state(self, old_path: Path, new_path: Path) -> None:
+        """重命名后同步 readers / ROI / 当前切片 / 文件列表。"""
+        if old_path in self._readers:
+            reader = self._readers.pop(old_path)
+            reader._path = new_path
+            self._readers[new_path] = reader
+        for roi in self._roi_manager.all_rois():
+            if roi.slide_path == old_path:
+                roi.slide_path = new_path
+        if self._current_slide == old_path:
+            self._current_slide = new_path
+        for i in range(self._file_list.count()):
+            it = self._file_list.item(i)
+            if it and it.data(Qt.ItemDataRole.UserRole) == str(old_path):
+                it.setText(new_path.name)
+                it.setData(Qt.ItemDataRole.UserRole, str(new_path))
+                break
+
+    def _apply_rename_batch(self, items: list[RenameItem]) -> RenameSummary:
+        """执行计划并同步 GUI 状态。"""
+        ready = [it for it in items if it.status == "ready"]
+        mapping = {(it.path, it.path.with_name(it.new_name or it.path.name)): it for it in ready}
+        summary = execute_rename_plan(items)
+        for (old, _new), it in mapping.items():
+            final = old.with_name(it.new_name) if it.new_name else None
+            if final and final.exists() and old.exists() is False:
+                self._sync_rename_state(old, final)
+        return summary
 
     def _set_deepliif_model_dir(self) -> None:
         """设置 DeepLIIF 模型目录。"""

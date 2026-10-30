@@ -25,6 +25,10 @@ ai = [
     "deepliif>=1.2.6,<2",
     "requests>=2.28,<3",
 ]
+ocr = [
+    "rapidocr>=3.0,<4",
+    "onnxruntime>=1.16",
+]
 
 # 主题样式表与 QSS 引用的箭头图标，必须随包分发，
 # 否则 pip install（非 -e）后 load_theme() 读不到文件，UI 样式全部丢失。
