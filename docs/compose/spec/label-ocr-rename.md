@@ -3,7 +3,7 @@ feature: label-ocr-rename
 status: delivered
 updated: 2026-10-30
 branch: feat/label-ocr-rename
-commits: d944a06..<head> # 交付时回填
+commits: d944a06..3faaf29
 ---
 
 # 标签图 OCR 批量重命名
